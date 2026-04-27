@@ -28,7 +28,6 @@ on:
         options:
           - armeabi-v7a
           - arm64-v8a
-          - 'armeabi-v7a arm64-v8a'
 
 jobs:
   build-android:
@@ -56,21 +55,19 @@ jobs:
         with:
           python-version: '3.10'
       
-      # Step 4: Install system dependencies
+      # Step 4: Install system dependencies (minimal)
       - name: 📦 Install system dependencies
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             build-essential \
-            ccache \
             git \
             zlib1g-dev \
             python3-dev \
             python3-pip \
             libncurses5-dev \
             libncursesw5-dev \
-            libtinfo6 \
             libffi-dev \
             libssl-dev \
             libsqlite3-dev \
@@ -92,14 +89,29 @@ jobs:
             lib32z1 \
             lib32stdc++6
       
-      # Step 5: Create swap space
+      # Step 5: Create swap space (alternative method)
       - name: 💾 Create swap space
         run: |
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # Try multiple methods to create swap
+          sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096 2>/dev/null || \
+          sudo dd if=/dev/zero of=/tmp/swapfile bs=1M count=4096 2>/dev/null || \
+          echo "Swap creation skipped - continuing without swap"
+          
+          # Try to enable swap if file exists
+          if [ -f /mnt/swapfile ]; then
+            sudo chmod 600 /mnt/swapfile
+            sudo mkswap /mnt/swapfile 2>/dev/null
+            sudo swapon /mnt/swapfile 2>/dev/null
+          elif [ -f /tmp/swapfile ]; then
+            sudo chmod 600 /tmp/swapfile
+            sudo mkswap /tmp/swapfile 2>/dev/null
+            sudo swapon /tmp/swapfile 2>/dev/null
+          fi
+          
+          # Show memory status
+          echo "Memory status:"
           free -h
+          sudo swapon --show 2>/dev/null || echo "No swap active"
       
       # Step 6: Install Python packages
       - name: 📥 Install Python dependencies
@@ -110,53 +122,53 @@ jobs:
           pip install --upgrade virtualenv
           pip list
       
-      # Step 7: Setup Android SDK manually
+      # Step 7: Setup Android SDK
       - name: 📱 Setup Android SDK
         run: |
           # Create directories
-          mkdir -p $HOME/.buildozer/android/platform/android-sdk
+          ANDROID_SDK_DIR=$HOME/.buildozer/android/platform/android-sdk
+          mkdir -p $ANDROID_SDK_DIR
           mkdir -p $HOME/.buildozer/android/platform
           
           # Download Android SDK command-line tools
-          cd $HOME/.buildozer/android/platform/android-sdk
+          cd $ANDROID_SDK_DIR
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
           unzip -q commandlinetools-linux-9477386_latest.zip
+          rm commandlinetools-linux-9477386_latest.zip
           
-          # Move to proper location
+          # Fix directory structure
           mkdir -p cmdline-tools/latest
-          mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
-          rm -rf cmdline-tools/latest/cmdline-tools
-          
-          # Set environment variables
-          export ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
+          if [ -d "cmdline-tools/bin" ]; then
+            mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
+          fi
           
           # Accept licenses
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses --sdk_root=$ANDROID_SDK_ROOT
+          yes | $ANDROID_SDK_DIR/cmdline-tools/latest/bin/sdkmanager --licenses --sdk_root=$ANDROID_SDK_DIR 2>/dev/null || true
           
           # Install required SDK components
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
+          $ANDROID_SDK_DIR/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_DIR \
             "platform-tools" \
             "platforms;android-33" \
-            "build-tools;33.0.0"
+            "build-tools;33.0.0" 2>/dev/null || true
           
-          # Set environment variables for subsequent steps
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$HOME/.buildozer/android/platform/android-ndk-r23b" >> $GITHUB_ENV
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          # Set environment variables
+          echo "ANDROID_HOME=$ANDROID_SDK_DIR" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_DIR" >> $GITHUB_ENV
+          echo "$ANDROID_SDK_DIR/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_DIR/platform-tools" >> $GITHUB_PATH
       
       # Step 8: Download Android NDK
       - name: 📦 Download Android NDK
         run: |
-          cd $HOME/.buildozer/android/platform
-          if [ ! -d "android-ndk-r23b" ]; then
+          NDK_DIR=$HOME/.buildozer/android/platform/android-ndk-r23b
+          if [ ! -d "$NDK_DIR" ]; then
             echo "Downloading NDK r23b..."
+            cd $HOME/.buildozer/android/platform
             wget -q https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
             unzip -q android-ndk-r23b-linux.zip
             rm android-ndk-r23b-linux.zip
           fi
-          echo "ANDROID_NDK_HOME=$HOME/.buildozer/android/platform/android-ndk-r23b" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
       
       # Step 9: Cache SDK and NDK
       - name: 🔧 Cache Android SDK/NDK
@@ -166,19 +178,14 @@ jobs:
             ~/.buildozer/android/platform/android-sdk
             ~/.buildozer/android/platform/android-ndk-r23b
             ~/.cache/pip
-          key: ${{ runner.os }}-android-sdk-ndk-${{ hashFiles('buildozer.spec') }}
+          key: ${{ runner.os }}-android-sdk-ndk-v2-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            ${{ runner.os }}-android-sdk-ndk-
+            ${{ runner.os }}-android-sdk-ndk-v2-
       
-      # Step 10: Create buildozer.spec if missing
-      - name: 📝 Verify buildozer.spec
+      # Step 10: Create/update buildozer.spec
+      - name: 📝 Create buildozer.spec
         run: |
-          if [ ! -f buildozer.spec ]; then
-            echo "❌ buildozer.spec not found! Creating..."
-            buildozer init
-            
-            # Update buildozer.spec with correct settings
-            cat > buildozer.spec << 'EOF'
+          cat > buildozer.spec << 'SPECEOF'
           [app]
           title = My Android App
           package.name = myapp
@@ -199,30 +206,13 @@ jobs:
           
           [buildozer]
           log_level = 2
-          warn_on_root = 1
-          EOF
-            
-            echo "✅ buildozer.spec created"
-          else
-            # Fix deprecated android.arch to android.archs
-            sed -i 's/^android.arch = /android.archs = /' buildozer.spec
-            echo "✅ buildozer.spec updated"
-          fi
+          warn_on_root = 0
+          SPECEOF
           
-          echo "📄 buildozer.spec contents:"
+          echo "✅ buildozer.spec created"
           cat buildozer.spec
       
-      # Step 11: Override architecture from manual trigger
-      - name: 🎯 Set target architecture
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.arch != ''
-        run: |
-          ARCH="${{ github.event.inputs.arch }}"
-          echo "Setting architecture to: $ARCH"
-          sed -i "s/^android.archs = .*/android.archs = $ARCH/" buildozer.spec
-          echo "Updated android.archs:"
-          grep "^android.archs" buildozer.spec
-      
-      # Step 12: Build the APK
+      # Step 11: Build the APK
       - name: 🔨 Build APK
         id: build
         run: |
@@ -230,17 +220,16 @@ jobs:
           echo "Building $BUILD_MODE APK..."
           
           if [ "$BUILD_MODE" = "release" ]; then
-            if [ ! -f keystore.jks ]; then
-              keytool -genkey -v \
-                -keystore keystore.jks \
-                -alias myapp \
-                -keyalg RSA \
-                -keysize 2048 \
-                -validity 10000 \
-                -storepass password123 \
-                -keypass password123 \
-                -dname "CN=Dev, OU=Dev, O=Company, L=City, ST=State, C=US"
-            fi
+            keytool -genkey -v \
+              -keystore keystore.jks \
+              -alias myapp \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass password123 \
+              -keypass password123 \
+              -dname "CN=Dev, OU=Dev, O=Company, L=City, ST=State, C=US" \
+              2>/dev/null || true
             buildozer android release
           else
             buildozer android debug
@@ -257,7 +246,7 @@ jobs:
             exit 1
           fi
       
-      # Step 13: Upload APK as artifact
+      # Step 12: Upload APK as artifact
       - name: 📤 Upload APK artifact
         if: steps.build.outputs.apk_created == 'true'
         uses: actions/upload-artifact@v4
@@ -266,7 +255,7 @@ jobs:
           path: bin/*.apk
           retention-days: 30
       
-      # Step 14: Build summary
+      # Step 13: Build summary
       - name: 📊 Build Summary
         if: always()
         run: |
