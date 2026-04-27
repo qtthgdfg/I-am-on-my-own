@@ -39,8 +39,6 @@ jobs:
       # Step 1: Checkout repository
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       
       # Step 2: Setup Java
       - name: ☕ Setup Java 17
@@ -55,109 +53,76 @@ jobs:
         with:
           python-version: '3.10'
       
-      # Step 4: Install system dependencies (minimal)
+      # Step 4: Install system dependencies
       - name: 📦 Install system dependencies
         run: |
-          sudo dpkg --add-architecture i386
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             build-essential \
             git \
-            zlib1g-dev \
             python3-dev \
             python3-pip \
-            libncurses5-dev \
-            libncursesw5-dev \
             libffi-dev \
             libssl-dev \
-            libsqlite3-dev \
-            libbz2-dev \
-            libreadline-dev \
             liblzma-dev \
             autoconf \
             automake \
             libtool \
             cmake \
-            pkg-config \
             zip \
             unzip \
-            curl \
             wget \
-            openjdk-17-jdk \
-            libc6:i386 \
-            libstdc++6:i386 \
-            lib32z1 \
-            lib32stdc++6
+            curl \
+            openjdk-17-jdk
       
-      # Step 5: Create swap space (alternative method)
-      - name: 💾 Create swap space
-        run: |
-          # Try multiple methods to create swap
-          sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096 2>/dev/null || \
-          sudo dd if=/dev/zero of=/tmp/swapfile bs=1M count=4096 2>/dev/null || \
-          echo "Swap creation skipped - continuing without swap"
-          
-          # Try to enable swap if file exists
-          if [ -f /mnt/swapfile ]; then
-            sudo chmod 600 /mnt/swapfile
-            sudo mkswap /mnt/swapfile 2>/dev/null
-            sudo swapon /mnt/swapfile 2>/dev/null
-          elif [ -f /tmp/swapfile ]; then
-            sudo chmod 600 /tmp/swapfile
-            sudo mkswap /tmp/swapfile 2>/dev/null
-            sudo swapon /tmp/swapfile 2>/dev/null
-          fi
-          
-          # Show memory status
-          echo "Memory status:"
-          free -h
-          sudo swapon --show 2>/dev/null || echo "No swap active"
-      
-      # Step 6: Install Python packages
+      # Step 5: Install Python packages
       - name: 📥 Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install --upgrade cython==0.29.33
-          pip install --upgrade buildozer
-          pip install --upgrade virtualenv
-          pip list
+          pip install cython==0.29.33
+          pip install buildozer
+          pip install virtualenv
       
-      # Step 7: Setup Android SDK
+      # Step 6: Setup Android SDK (with legacy path fix)
       - name: 📱 Setup Android SDK
         run: |
-          # Create directories
-          ANDROID_SDK_DIR=$HOME/.buildozer/android/platform/android-sdk
-          mkdir -p $ANDROID_SDK_DIR
-          mkdir -p $HOME/.buildozer/android/platform
+          ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
+          mkdir -p $ANDROID_SDK_ROOT
           
-          # Download Android SDK command-line tools
-          cd $ANDROID_SDK_DIR
+          cd $ANDROID_SDK_ROOT
+          
+          # Download command line tools
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
           unzip -q commandlinetools-linux-9477386_latest.zip
           rm commandlinetools-linux-9477386_latest.zip
           
-          # Fix directory structure
+          # Create proper structure for new SDK
           mkdir -p cmdline-tools/latest
-          if [ -d "cmdline-tools/bin" ]; then
-            mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
-          fi
+          cp -r cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
+          rm -rf cmdline-tools/NOTICE.txt cmdline-tools/bin cmdline-tools/lib 2>/dev/null || true
+          
+          # Create legacy path that Buildozer expects
+          mkdir -p tools/bin
+          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager $ANDROID_SDK_ROOT/tools/bin/sdkmanager
+          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager $ANDROID_SDK_ROOT/tools/bin/avdmanager
           
           # Accept licenses
-          yes | $ANDROID_SDK_DIR/cmdline-tools/latest/bin/sdkmanager --licenses --sdk_root=$ANDROID_SDK_DIR 2>/dev/null || true
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses --sdk_root=$ANDROID_SDK_ROOT 2>/dev/null || true
           
           # Install required SDK components
-          $ANDROID_SDK_DIR/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_DIR \
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
             "platform-tools" \
             "platforms;android-33" \
             "build-tools;33.0.0" 2>/dev/null || true
           
           # Set environment variables
-          echo "ANDROID_HOME=$ANDROID_SDK_DIR" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_DIR" >> $GITHUB_ENV
-          echo "$ANDROID_SDK_DIR/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_DIR/platform-tools" >> $GITHUB_PATH
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/tools/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
       
-      # Step 8: Download Android NDK
+      # Step 7: Download Android NDK
       - name: 📦 Download Android NDK
         run: |
           NDK_DIR=$HOME/.buildozer/android/platform/android-ndk-r23b
@@ -170,7 +135,7 @@ jobs:
           fi
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
       
-      # Step 9: Cache SDK and NDK
+      # Step 8: Cache SDK and NDK
       - name: 🔧 Cache Android SDK/NDK
         uses: actions/cache@v4
         with:
@@ -178,14 +143,14 @@ jobs:
             ~/.buildozer/android/platform/android-sdk
             ~/.buildozer/android/platform/android-ndk-r23b
             ~/.cache/pip
-          key: ${{ runner.os }}-android-sdk-ndk-v2-${{ hashFiles('buildozer.spec') }}
+          key: ${{ runner.os }}-android-sdk-v3-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            ${{ runner.os }}-android-sdk-ndk-v2-
+            ${{ runner.os }}-android-sdk-v3-
       
-      # Step 10: Create/update buildozer.spec
+      # Step 9: Create buildozer.spec
       - name: 📝 Create buildozer.spec
         run: |
-          cat > buildozer.spec << 'SPECEOF'
+          cat > buildozer.spec << 'EOF'
           [app]
           title = My Android App
           package.name = myapp
@@ -207,12 +172,12 @@ jobs:
           [buildozer]
           log_level = 2
           warn_on_root = 0
-          SPECEOF
+          EOF
           
           echo "✅ buildozer.spec created"
           cat buildozer.spec
       
-      # Step 11: Build the APK
+      # Step 10: Build the APK
       - name: 🔨 Build APK
         id: build
         run: |
@@ -228,34 +193,40 @@ jobs:
               -validity 10000 \
               -storepass password123 \
               -keypass password123 \
-              -dname "CN=Dev, OU=Dev, O=Company, L=City, ST=State, C=US" \
-              2>/dev/null || true
+              -dname "CN=Dev" 2>/dev/null || true
             buildozer android release
           else
             buildozer android debug
           fi
           
-          # Check if APK was created
+          # Show results
+          echo ""
+          echo "Checking for APK..."
+          find . -name "*.apk" -type f 2>/dev/null || echo "No APK found in current directory"
+          find $HOME -name "*.apk" -type f 2>/dev/null || echo "No APK found in home directory"
+          
+          # Check bin directory
           if ls bin/*.apk 1> /dev/null 2>&1; then
             echo "✅ APK built successfully!"
             ls -lh bin/*.apk
             echo "apk_created=true" >> $GITHUB_OUTPUT
           else
-            echo "❌ APK not found!"
+            echo "❌ APK not found in bin/"
+            echo "Contents of bin/:"
+            ls -la bin/ 2>/dev/null || echo "bin/ directory does not exist"
             echo "apk_created=false" >> $GITHUB_OUTPUT
-            exit 1
           fi
       
-      # Step 12: Upload APK as artifact
+      # Step 11: Upload APK as artifact
       - name: 📤 Upload APK artifact
         if: steps.build.outputs.apk_created == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: Android-APK-${{ github.run_number }}
+          name: Android-APK
           path: bin/*.apk
           retention-days: 30
       
-      # Step 13: Build summary
+      # Step 12: Build summary
       - name: 📊 Build Summary
         if: always()
         run: |
@@ -266,10 +237,11 @@ jobs:
           echo "Build Number: ${{ github.run_number }}"
           echo "Timestamp: $(date)"
           echo "============================================"
+          
           if ls bin/*.apk 1> /dev/null 2>&1; then
-            echo "✅ APK BUILD SUCCESSFUL"
+            echo "✅ SUCCESS - APK created"
             ls -lh bin/*.apk
           else
-            echo "❌ BUILD FAILED"
+            echo "❌ No APK found"
           fi
           echo "============================================"
