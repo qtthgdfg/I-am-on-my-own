@@ -70,7 +70,7 @@ jobs:
             python3-pip \
             libncurses5-dev \
             libncursesw5-dev \
-            libtinfo5 \
+            libtinfo6 \
             libffi-dev \
             libssl-dev \
             libsqlite3-dev \
