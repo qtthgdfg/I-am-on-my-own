@@ -41,7 +41,75 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install cython buildozer virtualenv
       
-      - name: Create buildozer.spec (with skip_update and accept_sdk_agreement)
+      - name: Setup Android SDK manually
+        run: |
+          ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
+          mkdir -p $ANDROID_SDK_ROOT
+          cd $ANDROID_SDK_ROOT
+          
+          # Download command line tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q commandlinetools-linux-9477386_latest.zip
+          rm commandlinetools-linux-9477386_latest.zip
+          
+          # Create proper structure
+          mkdir -p cmdline-tools
+          mv cmdline-tools cmdline-tools-temp 2>/dev/null || true
+          mkdir -p cmdline-tools/latest
+          if [ -d "cmdline-tools-temp" ]; then
+            cp -r cmdline-tools-temp/* cmdline-tools/latest/ 2>/dev/null || true
+            rm -rf cmdline-tools-temp
+          fi
+          
+          # Create LEGACY path that Buildozer expects
+          mkdir -p tools/bin
+          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager $ANDROID_SDK_ROOT/tools/bin/sdkmanager
+          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager $ANDROID_SDK_ROOT/tools/bin/avdmanager
+          chmod +x $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/*
+          
+          # Accept licenses
+          mkdir -p licenses
+          echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > licenses/android-sdk-license
+          
+          # Install required packages
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.0" \
+            "build-tools;34.0.0" \
+            2>/dev/null || true
+          
+          # Set environment variables
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/tools/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          
+          # Verify setup
+          echo ""
+          echo "=== Verifying SDK setup ==="
+          echo "SDK root: $ANDROID_SDK_ROOT"
+          echo ""
+          echo "sdkmanager location:"
+          find $ANDROID_SDK_ROOT -name "sdkmanager" -type f 2>/dev/null
+          echo ""
+          echo "build-tools:"
+          ls -la $ANDROID_SDK_ROOT/build-tools/ 2>/dev/null || echo "build-tools directory missing (will be installed by Buildozer)"
+          echo ""
+          echo "platforms:"
+          ls -la $ANDROID_SDK_ROOT/platforms/ 2>/dev/null || echo "platforms directory missing"
+      
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            ${{ runner.os }}-buildozer-
+      
+      - name: Create buildozer.spec
         run: |
           cat > buildozer.spec << 'EOF'
           [app]
@@ -55,13 +123,13 @@ jobs:
           orientation = portrait
           fullscreen = 0
           android.permissions = INTERNET
-          android.api = 30
+          android.api = 33
           android.minapi = 21
           android.ndk = 25b
           android.archs = armeabi-v7a
           android.allow_backup = True
           android.accept_sdk_agreement = True
-          android.skip_update = True
+          android.skip_update = False
           p4a.branch = develop
           
           [buildozer]
@@ -71,17 +139,6 @@ jobs:
           
           echo "buildozer.spec created"
           cat buildozer.spec
-      
-      - name: Pre-accept SDK licenses
-        run: |
-          # Create SDK license directory
-          SDK_LICENSES_DIR=$HOME/.buildozer/android/platform/android-sdk/licenses
-          mkdir -p $SDK_LICENSES_DIR
-          
-          # Pre-accept the Android SDK license
-          echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > $SDK_LICENSES_DIR/android-sdk-license
-          
-          echo "SDK licenses accepted"
       
       - name: Build APK
         id: build
@@ -94,12 +151,9 @@ jobs:
           BUILD_EXIT=${PIPESTATUS[0]}
           
           echo ""
-          echo "Build exit code: $BUILD_EXIT"
-          
-          # Search for errors
-          echo ""
-          echo "=== Errors in build log ==="
-          grep -i "error\|failed\|aidl" full_build.log | head -20 || echo "No specific errors found"
+          echo "=========================================="
+          echo "BUILD COMPLETE - Exit Code: $BUILD_EXIT"
+          echo "=========================================="
           
           # Find APK
           echo ""
@@ -108,16 +162,18 @@ jobs:
           find /home/runner -name "*.apk" -type f 2>/dev/null | head -10
           
           if ls bin/*.apk 1> /dev/null 2>&1; then
-            echo "✅ APK FOUND!"
+            echo ""
+            echo "✅✅✅ APK FOUND! ✅✅✅"
             ls -lh bin/*.apk
             echo "apk_created=true" >> $GITHUB_OUTPUT
           else
+            echo ""
             echo "❌ No APK in bin/"
             
-            # Show relevant log sections
+            # Show errors
             echo ""
-            echo "=== Checking for aidl issues ==="
-            grep -A5 -B5 "aidl\|build-tools" full_build.log | head -50
+            echo "=== Errors/Warnings ==="
+            grep -i "error\|failed\|Warning" full_build.log | tail -20
             
             echo "apk_created=false" >> $GITHUB_OUTPUT
           fi
@@ -130,7 +186,7 @@ jobs:
           path: bin/*.apk
           retention-days: 30
       
-      - name: Upload build log
+      - name: Upload build log (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -144,11 +200,11 @@ jobs:
           echo "============================================"
           echo "BUILD SUMMARY"
           echo "============================================"
-          echo "Status: ${{ job.status }}"
+          echo "Job Status: ${{ job.status }}"
           if ls bin/*.apk 1> /dev/null 2>&1; then
-            echo "✅ APK SUCCESSFULLY CREATED"
+            echo "✅✅✅ APK SUCCESSFULLY CREATED ✅✅✅"
             ls -lh bin/*.apk
           else
-            echo "❌ BUILD FAILED"
+            echo "❌ NO APK CREATED"
           fi
           echo "============================================"
