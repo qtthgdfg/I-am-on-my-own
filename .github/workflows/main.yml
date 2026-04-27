@@ -41,7 +41,7 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install cython buildozer virtualenv
       
-      - name: Create buildozer.spec
+      - name: Create buildozer.spec (with skip_update and accept_sdk_agreement)
         run: |
           cat > buildozer.spec << 'EOF'
           [app]
@@ -61,7 +61,7 @@ jobs:
           android.archs = armeabi-v7a
           android.allow_backup = True
           android.accept_sdk_agreement = True
-          android.skip_update = False
+          android.skip_update = True
           p4a.branch = develop
           
           [buildozer]
@@ -72,6 +72,17 @@ jobs:
           echo "buildozer.spec created"
           cat buildozer.spec
       
+      - name: Pre-accept SDK licenses
+        run: |
+          # Create SDK license directory
+          SDK_LICENSES_DIR=$HOME/.buildozer/android/platform/android-sdk/licenses
+          mkdir -p $SDK_LICENSES_DIR
+          
+          # Pre-accept the Android SDK license
+          echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > $SDK_LICENSES_DIR/android-sdk-license
+          
+          echo "SDK licenses accepted"
+      
       - name: Build APK
         id: build
         run: |
@@ -79,44 +90,35 @@ jobs:
           echo "STARTING BUILD"
           echo "=========================================="
           
-          # Run buildozer with full output
           buildozer android debug 2>&1 | tee full_build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           
           echo ""
-          echo "=========================================="
-          echo "BUILD COMPLETE - Exit Code: $BUILD_EXIT"
-          echo "=========================================="
+          echo "Build exit code: $BUILD_EXIT"
           
-          # Search for the actual error
+          # Search for errors
           echo ""
-          echo "=== Searching for errors in build log ==="
-          grep -i "error\|failed\|exception\|traceback" full_build.log | head -20 || echo "No obvious errors found"
+          echo "=== Errors in build log ==="
+          grep -i "error\|failed\|aidl" full_build.log | head -20 || echo "No specific errors found"
           
+          # Find APK
           echo ""
-          echo "=== Last 100 lines of build log ==="
-          tail -100 full_build.log
-          
-          echo ""
-          echo "=== Searching for APK files ==="
-          find / -name "*.apk" -type f 2>/dev/null | head -10
-          
-          # Check bin directory
-          if [ -d bin ]; then
-            echo ""
-            echo "=== Contents of bin/ ==="
-            ls -la bin/
-          fi
+          echo "=== Searching for APK ==="
+          find . -name "*.apk" -type f 2>/dev/null
+          find /home/runner -name "*.apk" -type f 2>/dev/null | head -10
           
           if ls bin/*.apk 1> /dev/null 2>&1; then
-            echo ""
             echo "✅ APK FOUND!"
             ls -lh bin/*.apk
             echo "apk_created=true" >> $GITHUB_OUTPUT
-            cp bin/*.apk app-debug.apk
           else
+            echo "❌ No APK in bin/"
+            
+            # Show relevant log sections
             echo ""
-            echo "❌ No APK found in bin/"
+            echo "=== Checking for aidl issues ==="
+            grep -A5 -B5 "aidl\|build-tools" full_build.log | head -50
+            
             echo "apk_created=false" >> $GITHUB_OUTPUT
           fi
       
@@ -125,16 +127,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Android-APK
-          path: |
-            bin/*.apk
-            app-debug.apk
+          path: bin/*.apk
           retention-days: 30
       
-      - name: Upload full build log
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-build-log
+          name: build-log
           path: full_build.log
           retention-days: 7
       
@@ -143,14 +143,12 @@ jobs:
         run: |
           echo "============================================"
           echo "BUILD SUMMARY"
-          echo "==========================================="
-          echo "Job Status: ${{ job.status }}"
+          echo "============================================"
+          echo "Status: ${{ job.status }}"
           if ls bin/*.apk 1> /dev/null 2>&1; then
             echo "✅ APK SUCCESSFULLY CREATED"
             ls -lh bin/*.apk
           else
-            echo "❌ NO APK CREATED"
-            echo ""
-            echo "Download the 'full-build-log' artifact to see what went wrong"
+            echo "❌ BUILD FAILED"
           fi
           echo "============================================"
