@@ -28,22 +28,18 @@ on:
         options:
           - armeabi-v7a
           - arm64-v8a
-          - armeabi-v7a arm64-v8a
+          - 'armeabi-v7a arm64-v8a'
       upload_artifact:
         description: 'Upload APK as artifact'
         required: false
         default: true
         type: boolean
 
-env:
-  PYTHON_VERSION: '3.10'
-  BUILD_TIMEOUT: 45
-
 jobs:
   build-android:
     name: Build Android APK (${{ github.event.inputs.build_mode || 'debug' }})
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ env.BUILD_TIMEOUT }}
+    timeout-minutes: 45
     
     steps:
       # Step 1: Checkout repository
@@ -62,10 +58,10 @@ jobs:
           cache: 'gradle'
       
       # Step 3: Setup Python
-      - name: 🐍 Setup Python ${{ env.PYTHON_VERSION }}
+      - name: 🐍 Setup Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.10'
           cache: 'pip'
       
       # Step 4: Install system dependencies
@@ -249,7 +245,6 @@ jobs:
           BUILD_DATE=$(date +'%Y%m%d_%H%M%S')
           BUILD_MODE="${{ github.event.inputs.build_mode || 'debug' }}"
           APK_FILE=$(ls bin/*.apk | head -1)
-          APK_BASENAME=$(basename "$APK_FILE" .apk)
           NEW_NAME="${BUILD_MODE}_${BUILD_DATE}_${GITHUB_SHA:0:7}"
           echo "Original APK: $APK_FILE"
           echo "New name: $NEW_NAME"
