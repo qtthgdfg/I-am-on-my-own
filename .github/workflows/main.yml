@@ -41,59 +41,6 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install cython buildozer virtualenv
       
-      - name: Setup Android SDK and accept licenses
-        run: |
-          # Create SDK directory
-          ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
-          mkdir -p $ANDROID_SDK_ROOT
-          
-          # Download command line tools
-          cd $ANDROID_SDK_ROOT
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
-          unzip -q commandlinetools-linux-9477386_latest.zip
-          rm commandlinetools-linux-9477386_latest.zip
-          
-          # Create proper directory structure
-          mkdir -p cmdline-tools/latest
-          if [ -d "cmdline-tools/bin" ]; then
-            cp -r cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
-          fi
-          
-          # Accept all licenses
-          echo -e "y\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny" | \
-            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses --sdk_root=$ANDROID_SDK_ROOT
-          
-          # Install required packages
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
-            "platform-tools" \
-            "platforms;android-33" \
-            "build-tools;33.0.0"
-          
-          # Create legacy symlink path for buildozer
-          mkdir -p tools/bin
-          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager $ANDROID_SDK_ROOT/tools/bin/sdkmanager
-          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager $ANDROID_SDK_ROOT/tools/bin/avdmanager
-          
-          # Set environment variables
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/tools/bin" >> $GITHUB_PATH
-          
-          # Verify setup
-          echo "SDK setup complete. Checking..."
-          ls -la $ANDROID_SDK_ROOT/build-tools/ 2>/dev/null || echo "No build-tools yet (will be installed by buildozer)"
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --list --sdk_root=$ANDROID_SDK_ROOT 2>/dev/null | head -20
-      
-      - name: Cache Android SDK
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.buildozer/android/platform/android-sdk
-            ~/.cache/pip
-          key: ${{ runner.os }}-android-sdk-v4
-      
       - name: Create buildozer.spec
         run: |
           cat > buildozer.spec << 'EOF'
@@ -102,18 +49,19 @@ jobs:
           package.name = myapp
           package.domain = org.example
           source.dir = .
-          source.include_exts = py,png,jpg,kv,atlas,json
+          source.include_exts = py
           version = 1.0
-          requirements = python3,kivy==2.3.0
+          requirements = python3,kivy
           orientation = portrait
           fullscreen = 0
           android.permissions = INTERNET
-          android.api = 33
+          android.api = 30
           android.minapi = 21
           android.ndk = 25b
           android.archs = armeabi-v7a
           android.allow_backup = True
           android.accept_sdk_agreement = True
+          android.skip_update = False
           p4a.branch = develop
           
           [buildozer]
@@ -121,38 +69,55 @@ jobs:
           warn_on_root = 0
           EOF
           
-          echo "buildozer.spec contents:"
+          echo "buildozer.spec created"
           cat buildozer.spec
       
       - name: Build APK
         id: build
         run: |
-          echo "Building APK..."
-          buildozer android debug 2>&1 | tee build.log
+          echo "=========================================="
+          echo "STARTING BUILD"
+          echo "=========================================="
+          
+          # Run buildozer with full output
+          buildozer android debug 2>&1 | tee full_build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           
           echo ""
-          echo "Build exit code: $BUILD_EXIT"
+          echo "=========================================="
+          echo "BUILD COMPLETE - Exit Code: $BUILD_EXIT"
+          echo "=========================================="
           
-          # Find APK
+          # Search for the actual error
           echo ""
-          echo "Searching for APK files:"
-          find . -name "*.apk" -type f 2>/dev/null || echo "No APK in current directory"
-          find /home/runner -name "*.apk" -type f 2>/dev/null || echo "No APK in home directory"
+          echo "=== Searching for errors in build log ==="
+          grep -i "error\|failed\|exception\|traceback" full_build.log | head -20 || echo "No obvious errors found"
+          
+          echo ""
+          echo "=== Last 100 lines of build log ==="
+          tail -100 full_build.log
+          
+          echo ""
+          echo "=== Searching for APK files ==="
+          find / -name "*.apk" -type f 2>/dev/null | head -10
+          
+          # Check bin directory
+          if [ -d bin ]; then
+            echo ""
+            echo "=== Contents of bin/ ==="
+            ls -la bin/
+          fi
           
           if ls bin/*.apk 1> /dev/null 2>&1; then
             echo ""
             echo "✅ APK FOUND!"
             ls -lh bin/*.apk
             echo "apk_created=true" >> $GITHUB_OUTPUT
+            cp bin/*.apk app-debug.apk
           else
             echo ""
-            echo "❌ No APK in bin/"
-            
-            # Show build summary
-            echo ""
-            echo "=== Build log (last 50 lines) ==="
-            tail -50 build.log
+            echo "❌ No APK found in bin/"
+            echo "apk_created=false" >> $GITHUB_OUTPUT
           fi
       
       - name: Upload APK
@@ -160,15 +125,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Android-APK
-          path: bin/*.apk
+          path: |
+            bin/*.apk
+            app-debug.apk
           retention-days: 30
       
-      - name: Upload build log (debugging)
-        if: failure()
+      - name: Upload full build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
+          name: full-build-log
+          path: full_build.log
           retention-days: 7
       
       - name: Summary
@@ -176,14 +143,14 @@ jobs:
         run: |
           echo "============================================"
           echo "BUILD SUMMARY"
-          echo "============================================"
-          echo "Status: ${{ job.status }}"
-          echo "============================================"
+          echo "==========================================="
+          echo "Job Status: ${{ job.status }}"
           if ls bin/*.apk 1> /dev/null 2>&1; then
-            echo "✅ APK BUILD SUCCESSFUL"
+            echo "✅ APK SUCCESSFULLY CREATED"
             ls -lh bin/*.apk
           else
-            echo "Status: Build completed but checking for APK..."
-            find /home/runner -name "*.apk" -type f 2>/dev/null
+            echo "❌ NO APK CREATED"
+            echo ""
+            echo "Download the 'full-build-log' artifact to see what went wrong"
           fi
           echo "============================================"
