@@ -8,7 +8,7 @@ on:
 jobs:
   build-android:
     name: Build Android APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     
     steps:
@@ -30,41 +30,55 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            build-essential git python3-dev python3-pip \
-            libffi-dev libssl-dev liblzma-dev \
-            autoconf automake libtool cmake \
-            zip unzip wget curl \
-            openjdk-17-jdk
+            build-essential \
+            git \
+            python3-dev \
+            python3-pip \
+            libffi-dev \
+            libssl-dev \
+            liblzma-dev \
+            autoconf \
+            automake \
+            autotools-dev \
+            libtool \
+            libtool-bin \
+            cmake \
+            pkg-config \
+            zip \
+            unzip \
+            wget \
+            curl \
+            openjdk-17-jdk \
+            libncurses-dev \
+            libtinfo5 \
+            libsqlite3-dev \
+            libreadline-dev \
+            libbz2-dev
       
       - name: Install Python packages
         run: |
           pip install --upgrade pip setuptools wheel
           pip install cython buildozer virtualenv
       
-      - name: Setup Android SDK manually
+      - name: Setup Android SDK
         run: |
           ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
           mkdir -p $ANDROID_SDK_ROOT
           cd $ANDROID_SDK_ROOT
           
-          # Download command line tools
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
           unzip -q commandlinetools-linux-9477386_latest.zip
           rm commandlinetools-linux-9477386_latest.zip
           
           # Create proper structure
-          mkdir -p cmdline-tools
-          mv cmdline-tools cmdline-tools-temp 2>/dev/null || true
           mkdir -p cmdline-tools/latest
-          if [ -d "cmdline-tools-temp" ]; then
-            cp -r cmdline-tools-temp/* cmdline-tools/latest/ 2>/dev/null || true
-            rm -rf cmdline-tools-temp
+          if [ -d "cmdline-tools/bin" ]; then
+            mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
           fi
           
-          # Create LEGACY path that Buildozer expects
+          # Create legacy path
           mkdir -p tools/bin
           ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager $ANDROID_SDK_ROOT/tools/bin/sdkmanager
-          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager $ANDROID_SDK_ROOT/tools/bin/avdmanager
           chmod +x $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/*
           
           # Accept licenses
@@ -76,38 +90,22 @@ jobs:
             "platform-tools" \
             "platforms;android-33" \
             "build-tools;33.0.0" \
-            "build-tools;34.0.0" \
             2>/dev/null || true
           
-          # Set environment variables
+          # Set environment
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/tools/bin" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-          
-          # Verify setup
-          echo ""
-          echo "=== Verifying SDK setup ==="
-          echo "SDK root: $ANDROID_SDK_ROOT"
-          echo ""
-          echo "sdkmanager location:"
-          find $ANDROID_SDK_ROOT -name "sdkmanager" -type f 2>/dev/null
-          echo ""
-          echo "build-tools:"
-          ls -la $ANDROID_SDK_ROOT/build-tools/ 2>/dev/null || echo "build-tools directory missing (will be installed by Buildozer)"
-          echo ""
-          echo "platforms:"
-          ls -la $ANDROID_SDK_ROOT/platforms/ 2>/dev/null || echo "platforms directory missing"
       
-      - name: Cache Android SDK
+      - name: Cache build dependencies
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+          key: ${{ runner.os }}-buildozer-v3-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            ${{ runner.os }}-buildozer-
+            ${{ runner.os }}-buildozer-v3-
       
       - name: Create buildozer.spec
         run: |
@@ -125,11 +123,10 @@ jobs:
           android.permissions = INTERNET
           android.api = 33
           android.minapi = 21
-          android.ndk = 25b
+          android.ndk = 23b
           android.archs = armeabi-v7a
           android.allow_backup = True
           android.accept_sdk_agreement = True
-          android.skip_update = False
           p4a.branch = develop
           
           [buildozer]
@@ -140,41 +137,115 @@ jobs:
           echo "buildozer.spec created"
           cat buildozer.spec
       
+      # ⬇️ THIS IS THE FIX FOR THE libffi LT_SYS_SYMBOL_USCORE ERROR ⬇️
+      - name: Fix libffi autoconf issue (LT_SYS_SYMBOL_USCORE)
+        run: |
+          # Create a custom libffi recipe that works with newer autoconf
+          P4A_DIR=$HOME/.buildozer/android/platform/python-for-android
+          LIBFFI_RECIPE_DIR=$P4A_DIR/pythonforandroid/recipes/libffi
+          
+          echo "Waiting for python-for-android to be cloned during build..."
+          
+          # Write a script that will be executed during the build
+          cat > /tmp/fix_libffi.sh << 'FIXEOF'
+          #!/bin/bash
+          P4A_DIR="$HOME/.buildozer/android/platform/python-for-android"
+          LIBFFI_RECIPE_DIR="$P4A_DIR/pythonforandroid/recipes/libffi"
+          
+          if [ -d "$LIBFFI_RECIPE_DIR" ]; then
+            echo "Found libffi recipe at $LIBFFI_RECIPE_DIR"
+            
+            # Check if __init__.py exists
+            if [ -f "$LIBFFI_RECIPE_DIR/__init__.py" ]; then
+              # Backup original
+              cp "$LIBFFI_RECIPE_DIR/__init__.py" "$LIBFFI_RECIPE_DIR/__init__.py.bak"
+              
+              # Add autoreconf fix before the build step
+              sed -i '/def build_arch/,/autoreconf/{
+                /autoreconf/s/autoreconf -vif/autoreconf -vif || (\
+              echo "Patching configure for LT_SYS_SYMBOL_USCORE..." \&\&\
+              sed -i "s\/LT_SYS_SYMBOL_USCORE\/AC_CHECK_FUNCS(rindex)\/" configure \&\&\
+              autoreconf -vif)/
+              }' "$LIBFFI_RECIPE_DIR/__init__.py" 2>/dev/null || {
+                echo "sed approach failed, trying alternative fix..."
+                
+                # Alternative: Create wrapper script
+                cat > /tmp/autoreconf_wrapper.sh << 'WRAPEOF'
+          #!/bin/bash
+          # Wrapper to fix LT_SYS_SYMBOL_USCORE issue
+          if grep -q "LT_SYS_SYMBOL_USCORE" configure 2>/dev/null; then
+            echo "Patching configure to remove LT_SYS_SYMBOL_USCORE..."
+            sed -i 's/LT_SYS_SYMBOL_USCORE/AC_CHECK_FUNCS(rindex)/g' configure
+          fi
+          /usr/bin/autoreconf "$@"
+          WRAPEOF
+                chmod +x /tmp/autoreconf_wrapper.sh
+              }
+            fi
+          fi
+          FIXEOF
+          chmod +x /tmp/fix_libffi.sh
+      
       - name: Build APK
         id: build
         run: |
-          echo "=========================================="
-          echo "STARTING BUILD"
-          echo "=========================================="
+          echo "Starting build on $(lsb_release -ds)..."
+          echo "autoconf version: $(autoconf --version | head -1)"
+          echo "automake version: $(automake --version | head -1)"
           
+          # Set environment for autotools
+          export AUTORECONF=/usr/bin/autoreconf
+          export AUTOCONF=/usr/bin/autoconf
+          export AUTOMAKE=/usr/bin/automake
+          export ACLOCAL=/usr/bin/aclocal
+          export LIBTOOLIZE=/usr/bin/libtoolize
+          
+          # ⬇️ FIX: Pre-create libffi fix before build ⬇️
+          # This patches the libffi configure.ac to not use LT_SYS_SYMBOL_USCORE
+          echo "Setting up libffi fix..."
+          
+          # Create a patched autoreconf wrapper
+          cat > /tmp/autoreconf << 'AUTOWRAP'
+          #!/bin/bash
+          # Fix for LT_SYS_SYMBOL_USCORE error in libffi
+          for f in configure configure.ac; do
+            if [ -f "$f" ] && grep -q "LT_SYS_SYMBOL_USCORE" "$f" 2>/dev/null; then
+              echo "[FIX] Patching $f to remove LT_SYS_SYMBOL_USCORE..."
+              sed -i 's/LT_SYS_SYMBOL_USCORE/AC_CHECK_FUNCS(rindex)/g' "$f"
+            fi
+          done
+          /usr/bin/autoreconf "$@"
+          AUTOWRAP
+          chmod +x /tmp/autoreconf
+          
+          # Add patched autoreconf to PATH (before system one)
+          export PATH="/tmp:$PATH"
+          
+          echo "Starting Buildozer..."
           buildozer android debug 2>&1 | tee full_build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           
           echo ""
-          echo "=========================================="
-          echo "BUILD COMPLETE - Exit Code: $BUILD_EXIT"
-          echo "=========================================="
+          echo "Build exit code: $BUILD_EXIT"
+          
+          # Check for libffi issues in log
+          echo ""
+          echo "=== Checking for libffi errors ==="
+          grep -i "LT_SYS_SYMBOL_USCORE\|libffi.*error\|autoconf.*failed" full_build.log | tail -10
           
           # Find APK
           echo ""
-          echo "=== Searching for APK ==="
-          find . -name "*.apk" -type f 2>/dev/null
+          echo "Searching for APK..."
           find /home/runner -name "*.apk" -type f 2>/dev/null | head -10
           
           if ls bin/*.apk 1> /dev/null 2>&1; then
             echo ""
-            echo "✅✅✅ APK FOUND! ✅✅✅"
+            echo "✅ APK FOUND!"
             ls -lh bin/*.apk
             echo "apk_created=true" >> $GITHUB_OUTPUT
           else
             echo ""
             echo "❌ No APK in bin/"
-            
-            # Show errors
-            echo ""
-            echo "=== Errors/Warnings ==="
-            grep -i "error\|failed\|Warning" full_build.log | tail -20
-            
             echo "apk_created=false" >> $GITHUB_OUTPUT
           fi
       
@@ -186,11 +257,12 @@ jobs:
           path: bin/*.apk
           retention-days: 30
       
-      - name: Upload build log (always)
+      # ⬇️ ALWAYS UPLOAD BUILD LOG FOR DEBUGGING ⬇️
+      - name: Upload build log (ALWAYS)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-${{ github.run_number }}
           path: full_build.log
           retention-days: 7
       
@@ -200,11 +272,15 @@ jobs:
           echo "============================================"
           echo "BUILD SUMMARY"
           echo "============================================"
-          echo "Job Status: ${{ job.status }}"
+          echo "Status: ${{ job.status }}"
+          
           if ls bin/*.apk 1> /dev/null 2>&1; then
-            echo "✅✅✅ APK SUCCESSFULLY CREATED ✅✅✅"
+            echo "✅ APK SUCCESSFULLY CREATED"
             ls -lh bin/*.apk
           else
             echo "❌ NO APK CREATED"
+            echo ""
+            echo "📥 Download the build log from Artifacts:"
+            echo "   build-log-${{ github.run_number }}"
           fi
           echo "============================================"
