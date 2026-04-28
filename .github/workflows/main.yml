@@ -70,29 +70,24 @@ jobs:
           unzip -q commandlinetools-linux-9477386_latest.zip
           rm commandlinetools-linux-9477386_latest.zip
           
-          # Create proper structure
           mkdir -p cmdline-tools/latest
           if [ -d "cmdline-tools/bin" ]; then
             mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
           fi
           
-          # Create legacy path
           mkdir -p tools/bin
           ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager $ANDROID_SDK_ROOT/tools/bin/sdkmanager
           chmod +x $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/*
           
-          # Accept licenses
           mkdir -p licenses
           echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > licenses/android-sdk-license
           
-          # Install required packages
           $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
             "platform-tools" \
             "platforms;android-33" \
             "build-tools;33.0.0" \
             2>/dev/null || true
           
-          # Set environment
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
@@ -103,9 +98,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: ${{ runner.os }}-buildozer-v3-${{ hashFiles('buildozer.spec') }}
+          key: ${{ runner.os }}-buildozer-v4-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            ${{ runner.os }}-buildozer-v3-
+            ${{ runner.os }}-buildozer-v4-
       
       - name: Create buildozer.spec
         run: |
@@ -123,7 +118,7 @@ jobs:
           android.permissions = INTERNET
           android.api = 33
           android.minapi = 21
-          android.ndk = 23b
+          android.ndk = 25b
           android.archs = armeabi-v7a
           android.allow_backup = True
           android.accept_sdk_agreement = True
@@ -137,77 +132,20 @@ jobs:
           echo "buildozer.spec created"
           cat buildozer.spec
       
-      # ⬇️ THIS IS THE FIX FOR THE libffi LT_SYS_SYMBOL_USCORE ERROR ⬇️
-      - name: Fix libffi autoconf issue (LT_SYS_SYMBOL_USCORE)
-        run: |
-          # Create a custom libffi recipe that works with newer autoconf
-          P4A_DIR=$HOME/.buildozer/android/platform/python-for-android
-          LIBFFI_RECIPE_DIR=$P4A_DIR/pythonforandroid/recipes/libffi
-          
-          echo "Waiting for python-for-android to be cloned during build..."
-          
-          # Write a script that will be executed during the build
-          cat > /tmp/fix_libffi.sh << 'FIXEOF'
-          #!/bin/bash
-          P4A_DIR="$HOME/.buildozer/android/platform/python-for-android"
-          LIBFFI_RECIPE_DIR="$P4A_DIR/pythonforandroid/recipes/libffi"
-          
-          if [ -d "$LIBFFI_RECIPE_DIR" ]; then
-            echo "Found libffi recipe at $LIBFFI_RECIPE_DIR"
-            
-            # Check if __init__.py exists
-            if [ -f "$LIBFFI_RECIPE_DIR/__init__.py" ]; then
-              # Backup original
-              cp "$LIBFFI_RECIPE_DIR/__init__.py" "$LIBFFI_RECIPE_DIR/__init__.py.bak"
-              
-              # Add autoreconf fix before the build step
-              sed -i '/def build_arch/,/autoreconf/{
-                /autoreconf/s/autoreconf -vif/autoreconf -vif || (\
-              echo "Patching configure for LT_SYS_SYMBOL_USCORE..." \&\&\
-              sed -i "s\/LT_SYS_SYMBOL_USCORE\/AC_CHECK_FUNCS(rindex)\/" configure \&\&\
-              autoreconf -vif)/
-              }' "$LIBFFI_RECIPE_DIR/__init__.py" 2>/dev/null || {
-                echo "sed approach failed, trying alternative fix..."
-                
-                # Alternative: Create wrapper script
-                cat > /tmp/autoreconf_wrapper.sh << 'WRAPEOF'
-          #!/bin/bash
-          # Wrapper to fix LT_SYS_SYMBOL_USCORE issue
-          if grep -q "LT_SYS_SYMBOL_USCORE" configure 2>/dev/null; then
-            echo "Patching configure to remove LT_SYS_SYMBOL_USCORE..."
-            sed -i 's/LT_SYS_SYMBOL_USCORE/AC_CHECK_FUNCS(rindex)/g' configure
-          fi
-          /usr/bin/autoreconf "$@"
-          WRAPEOF
-                chmod +x /tmp/autoreconf_wrapper.sh
-              }
-            fi
-          fi
-          FIXEOF
-          chmod +x /tmp/fix_libffi.sh
-      
       - name: Build APK
         id: build
         run: |
           echo "Starting build on $(lsb_release -ds)..."
-          echo "autoconf version: $(autoconf --version | head -1)"
-          echo "automake version: $(automake --version | head -1)"
           
-          # Set environment for autotools
           export AUTORECONF=/usr/bin/autoreconf
           export AUTOCONF=/usr/bin/autoconf
           export AUTOMAKE=/usr/bin/automake
           export ACLOCAL=/usr/bin/aclocal
           export LIBTOOLIZE=/usr/bin/libtoolize
           
-          # ⬇️ FIX: Pre-create libffi fix before build ⬇️
-          # This patches the libffi configure.ac to not use LT_SYS_SYMBOL_USCORE
-          echo "Setting up libffi fix..."
-          
-          # Create a patched autoreconf wrapper
+          # Create patched autoreconf for libffi LT_SYS_SYMBOL_USCORE fix
           cat > /tmp/autoreconf << 'AUTOWRAP'
           #!/bin/bash
-          # Fix for LT_SYS_SYMBOL_USCORE error in libffi
           for f in configure configure.ac; do
             if [ -f "$f" ] && grep -q "LT_SYS_SYMBOL_USCORE" "$f" 2>/dev/null; then
               echo "[FIX] Patching $f to remove LT_SYS_SYMBOL_USCORE..."
@@ -217,25 +155,15 @@ jobs:
           /usr/bin/autoreconf "$@"
           AUTOWRAP
           chmod +x /tmp/autoreconf
-          
-          # Add patched autoreconf to PATH (before system one)
           export PATH="/tmp:$PATH"
           
-          echo "Starting Buildozer..."
           buildozer android debug 2>&1 | tee full_build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           
           echo ""
           echo "Build exit code: $BUILD_EXIT"
           
-          # Check for libffi issues in log
-          echo ""
-          echo "=== Checking for libffi errors ==="
-          grep -i "LT_SYS_SYMBOL_USCORE\|libffi.*error\|autoconf.*failed" full_build.log | tail -10
-          
           # Find APK
-          echo ""
-          echo "Searching for APK..."
           find /home/runner -name "*.apk" -type f 2>/dev/null | head -10
           
           if ls bin/*.apk 1> /dev/null 2>&1; then
@@ -246,6 +174,9 @@ jobs:
           else
             echo ""
             echo "❌ No APK in bin/"
+            echo ""
+            echo "=== Errors in log ==="
+            grep -i "error\|failed" full_build.log | grep -v "WARNING\|DEPRECATED\|prerequisites" | tail -15
             echo "apk_created=false" >> $GITHUB_OUTPUT
           fi
       
@@ -257,7 +188,6 @@ jobs:
           path: bin/*.apk
           retention-days: 30
       
-      # ⬇️ ALWAYS UPLOAD BUILD LOG FOR DEBUGGING ⬇️
       - name: Upload build log (ALWAYS)
         if: always()
         uses: actions/upload-artifact@v4
@@ -273,14 +203,10 @@ jobs:
           echo "BUILD SUMMARY"
           echo "============================================"
           echo "Status: ${{ job.status }}"
-          
           if ls bin/*.apk 1> /dev/null 2>&1; then
             echo "✅ APK SUCCESSFULLY CREATED"
             ls -lh bin/*.apk
           else
             echo "❌ NO APK CREATED"
-            echo ""
-            echo "📥 Download the build log from Artifacts:"
-            echo "   build-log-${{ github.run_number }}"
           fi
           echo "============================================"
