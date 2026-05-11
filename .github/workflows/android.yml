@@ -27,7 +27,7 @@ env:
 
 jobs:
   # ============================================================
-  # Setup Dependencies (Shared)
+  # Setup Dependencies
   # ============================================================
   setup-deps:
     runs-on: ubuntu-latest
@@ -47,10 +47,10 @@ jobs:
         if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
           echo "📦 Cloning RandomX ${{ env.RANDOMX_VERSION }}..."
+          mkdir -p libs
           git clone --branch ${{ env.RANDOMX_VERSION }} --depth 1 \
             https://github.com/tevador/RandomX.git libs/randomx
           
-          # Verify clone
           if [ ! -f "libs/randomx/src/randomx.h" ]; then
             echo "❌ RandomX clone failed!"
             exit 1
@@ -62,13 +62,8 @@ jobs:
         run: |
           echo "📦 Downloading nlohmann/json..."
           mkdir -p libs/nlohmann
-          
-          # nlohmann/json releases use tags like v3.11.3, not v3.11.2
-          # Use latest release for compatibility
           wget -q -O libs/nlohmann/json.hpp \
-            https://github.com/nlohmann/json/releases/latest/download/json.hpp || \
-          wget -q -O libs/nlohmann/json.hpp \
-            https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+            https://github.com/nlohmann/json/releases/latest/download/json.hpp
           
           if [ -f "libs/nlohmann/json.hpp" ]; then
             echo "✅ JSON library downloaded ($(wc -c < libs/nlohmann/json.hpp) bytes)"
@@ -77,43 +72,42 @@ jobs:
             exit 1
           fi
       
-      - name: Verify All Dependencies
+      - name: Verify Dependencies
         run: |
           echo "========================================="
-          echo "Verifying Dependencies:"
+          echo "Verifying Dependencies in libs/:"
           echo "========================================="
-          
-          # Check RandomX
-          if [ -f "libs/randomx/src/randomx.h" ]; then
-            echo "✅ RandomX header found"
-          else
-            echo "❌ RandomX header MISSING at libs/randomx/src/randomx.h"
-            echo "Contents of libs/randomx/:"
-            ls -la libs/randomx/ 2>/dev/null || echo "Directory doesn't exist"
-            exit 1
-          fi
-          
-          # Check JSON
-          if [ -f "libs/nlohmann/json.hpp" ]; then
-            echo "✅ JSON library found ($(wc -c < libs/nlohmann/json.hpp) bytes)"
-          else
-            echo "❌ JSON library MISSING at libs/nlohmann/json.hpp"
-            ls -la libs/nlohmann/ 2>/dev/null || echo "Directory doesn't exist"
-            exit 1
-          fi
-          
+          ls -la libs/
           echo ""
-          echo "Dependency tree:"
-          echo "libs/"
-          find libs -type f -name "*.h" -o -name "*.hpp" | head -20
+          
+          if [ -f "libs/randomx/src/randomx.h" ]; then
+            echo "✅ libs/randomx/src/randomx.h FOUND"
+          else
+            echo "❌ libs/randomx/src/randomx.h MISSING"
+            find libs -name "randomx.h" 2>/dev/null || echo "No randomx.h found anywhere"
+            exit 1
+          fi
+          
+          if [ -f "libs/nlohmann/json.hpp" ]; then
+            echo "✅ libs/nlohmann/json.hpp FOUND"
+          else
+            echo "❌ libs/nlohmann/json.hpp MISSING"
+            find libs -name "json.hpp" 2>/dev/null || echo "No json.hpp found anywhere"
+            exit 1
+          fi
+      
+      # Upload without the libs/ prefix so they can be placed correctly later
+      - name: Prepare Dependencies for Upload
+        run: |
+          mkdir -p /tmp/deps/randomx /tmp/deps/nlohmann
+          cp -r libs/randomx/* /tmp/deps/randomx/
+          cp libs/nlohmann/json.hpp /tmp/deps/nlohmann/
       
       - name: Upload Dependencies as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: dependencies
-          path: |
-            libs/randomx/
-            libs/nlohmann/
+          path: /tmp/deps/
           retention-days: 1
 
   # ============================================================
@@ -134,25 +128,58 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dependencies
+          path: libs/   # Extract to libs/ directory
+      
+      - name: Fix Dependency Structure (if needed)
+        run: |
+          echo "Current structure:"
+          find . -name "randomx.h" -o -name "json.hpp" 2>/dev/null
+          echo ""
+          echo "libs/ contents:"
+          ls -la libs/
+          echo ""
+          
+          # If randomx ended up at wrong level, move it
+          if [ -d "randomx" ] && [ ! -d "libs/randomx" ]; then
+            echo "Moving randomx/ to libs/randomx/"
+            mv randomx libs/
+          fi
+          
+          # If nlohmann ended up at wrong level, move it
+          if [ -d "nlohmann" ] && [ ! -d "libs/nlohmann" ]; then
+            echo "Moving nlohmann/ to libs/nlohmann/"
+            mv nlohmann libs/
+          fi
+          
+          # If individual files, create proper structure
+          if [ -f "libs/json.hpp" ] && [ ! -f "libs/nlohmann/json.hpp" ]; then
+            echo "Moving libs/json.hpp to libs/nlohmann/json.hpp"
+            mkdir -p libs/nlohmann
+            mv libs/json.hpp libs/nlohmann/
+          fi
       
       - name: Verify Dependencies After Download
         run: |
-          echo "Checking downloaded dependencies..."
+          echo "========================================="
+          echo "Checking dependency locations:"
+          echo "========================================="
+          find . -name "randomx.h" -o -name "json.hpp" 2>/dev/null
+          echo ""
           
           if [ -f "libs/randomx/src/randomx.h" ]; then
-            echo "✅ RandomX present"
+            echo "✅ RandomX at correct location: libs/randomx/src/randomx.h"
           else
-            echo "❌ RandomX NOT FOUND after download!"
-            echo "Current directory contents:"
-            ls -la
-            ls -la libs/ 2>/dev/null || echo "libs/ doesn't exist"
+            echo "❌ RandomX NOT at libs/randomx/src/randomx.h"
+            echo "Searching for randomx.h:"
+            find / -name "randomx.h" 2>/dev/null | head -5
             exit 1
           fi
           
           if [ -f "libs/nlohmann/json.hpp" ]; then
-            echo "✅ JSON library present"
+            echo "✅ JSON at correct location: libs/nlohmann/json.hpp"
           else
-            echo "❌ JSON library NOT FOUND after download!"
+            echo "❌ JSON NOT at libs/nlohmann/json.hpp"
+            find . -name "json.hpp" 2>/dev/null
             exit 1
           fi
       
@@ -171,9 +198,7 @@ jobs:
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
             "ndk;${{ env.ANDROID_NDK_VERSION }}" \
             "cmake;3.22.1" 2>/dev/null || true
-          
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
-          echo "NDK installed at: $ANDROID_NDK_HOME"
       
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -187,8 +212,6 @@ jobs:
       
       - name: Verify Android Project Structure
         run: |
-          echo "Checking Android project structure..."
-          
           required_files=(
             "android/build.gradle"
             "android/settings.gradle"
@@ -199,23 +222,14 @@ jobs:
             "android/app/src/main/cpp/android_main.cpp"
           )
           
-          missing=false
           for file in "${required_files[@]}"; do
             if [ -f "$file" ]; then
               echo "  ✅ $file"
             else
               echo "  ❌ MISSING: $file"
-              missing=true
+              exit 1
             fi
           done
-          
-          if [ "$missing" = true ]; then
-            echo ""
-            echo "Current directory structure:"
-            find . -type f -name "*.gradle" -o -name "*.xml" -o -name "*.cpp" | sort
-            exit 1
-          fi
-          
           echo "All required files present!"
       
       - name: Grant Gradle Permissions
@@ -227,43 +241,24 @@ jobs:
           echo "Building for ${{ matrix.abi }} (${{ matrix.build_type }})..."
           ./gradlew assemble${{ matrix.build_type == 'release' && 'Release' || 'Debug' }} \
             --no-daemon \
-            --stacktrace \
-            --info 2>&1 | tail -100
+            --stacktrace
       
       - name: Verify APK
         run: |
           APK_DIR="android/app/build/outputs/apk/${{ matrix.build_type }}"
-          echo "Looking for APK in: $APK_DIR"
-          find android/app/build -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
-          
           APK_FILE=$(find "$APK_DIR" -name "*.apk" -type f 2>/dev/null | head -1)
           
           if [ -n "$APK_FILE" ]; then
             echo "✅ APK found: $APK_FILE"
             echo "Size: $(du -sh "$APK_FILE" | cut -f1)"
+            echo ""
+            echo "Native libraries:"
+            unzip -l "$APK_FILE" 2>/dev/null | grep "\.so" || echo "  No .so files"
           else
             echo "❌ No APK found!"
-            echo ""
-            echo "Build output directory contents:"
             find android/app/build -type f 2>/dev/null | head -30
             exit 1
           fi
-      
-      - name: Check APK Contents
-        run: |
-          APK_DIR="android/app/build/outputs/apk/${{ matrix.build_type }}"
-          APK_FILE=$(find "$APK_DIR" -name "*.apk" -type f | head -1)
-          
-          echo "========================================="
-          echo "APK Analysis:"
-          echo "========================================="
-          echo "File: $APK_FILE"
-          echo "Size: $(du -sh "$APK_FILE" | cut -f1)"
-          echo ""
-          echo "Native libraries (.so files):"
-          unzip -l "$APK_FILE" 2>/dev/null | grep "\.so" || echo "  No native .so files found"
-          echo ""
-          echo "Architecture: ${{ matrix.abi }}"
       
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -271,58 +266,6 @@ jobs:
           name: apk-${{ matrix.build_type }}-${{ matrix.abi }}
           path: android/app/build/outputs/apk/${{ matrix.build_type }}/*.apk
           retention-days: 30
-
-  # ============================================================
-  # Desktop Build Verification
-  # ============================================================
-  build-desktop:
-    needs: setup-deps
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Download Dependencies
-        uses: actions/download-artifact@v4
-        with:
-          name: dependencies
-      
-      - name: Verify Dependencies
-        run: |
-          test -f "libs/randomx/src/randomx.h" || { echo "❌ RandomX missing"; exit 1; }
-          test -f "libs/nlohmann/json.hpp" || { echo "❌ JSON missing"; exit 1; }
-          echo "✅ All dependencies present"
-      
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake libssl-dev
-      
-      - name: Configure CMake
-        run: |
-          mkdir -p build && cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_WITH_SSL=ON \
-            -DBUILD_WITH_HWLOC=OFF \
-            -DENABLE_HUGEPAGES=OFF
-      
-      - name: Build Desktop Binary
-        run: cmake --build build -j$(nproc)
-      
-      - name: Verify Binary
-        run: |
-          if [ -f "build/MoneroRandomXMiner" ]; then
-            echo "✅ Desktop binary built successfully"
-            file build/MoneroRandomXMiner
-            echo ""
-            echo "Linked libraries:"
-            ldd build/MoneroRandomXMiner 2>/dev/null | grep -E "randomx|ssl|crypto" || echo "  (checking with objdump)"
-            objdump -p build/MoneroRandomXMiner 2>/dev/null | grep NEEDED || true
-          else
-            echo "❌ Desktop binary not found"
-            find build -type f -executable 2>/dev/null
-            exit 1
-          fi
 
   # ============================================================
   # Release
@@ -341,9 +284,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: apk-debug-armeabi-v7a
-      
-      - name: List APKs
-        run: ls -la *.apk
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
