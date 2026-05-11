@@ -1,0 +1,22 @@
+buildscript {
+    ext {
+        kotlin_version = '1.9.22'
+        compile_sdk = 34
+        min_sdk = 26
+        target_sdk = 34
+        ndk_version = '26.1.10909125'
+        cmake_version = '3.22.1'
+    }
+    
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
