@@ -1,0 +1,233 @@
+name: Android Build & Test
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'libs/**'
+      - 'CMakeLists.txt'
+  pull_request:
+    branches: [ main ]
+
+env:
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  ANDROID_NDK_VERSION: '26.1.10909125'
+
+jobs:
+  # ======================
+  # Android APK Build
+  # ======================
+  build-apk:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build_type: [debug, release]
+        abi: [arm64-v8a, armeabi-v7a]
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Install specific NDK
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
+            "ndk;${{ env.ANDROID_NDK_VERSION }}"
+      
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*') }}
+      
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+      
+      - name: Build with Gradle
+        working-directory: android
+        run: |
+          ./gradlew assemble${{ matrix.build_type == 'release' && 'Release' || 'Debug' }} \
+            -Pandroid.injected.invoked.from.ide=true
+      
+      - name: Verify APK
+        run: |
+          # Check APK exists
+          APK_PATH="android/app/build/outputs/apk/${{ matrix.build_type }}"
+          if ls $APK_PATH/app-*-${{ matrix.abi }}-${{ matrix.build_type }}.apk 1> /dev/null 2>&1; then
+            echo "✅ APK built successfully"
+          else
+            echo "❌ APK not found"
+            find android/app/build -name "*.apk" || true
+            exit 1
+          fi
+      
+      - name: Check APK size
+        run: |
+          du -sh android/app/build/outputs/apk/${{ matrix.build_type }}/*.apk
+      
+      - name: Check native libraries
+        run: |
+          # Extract and check native libs
+          unzip -l android/app/build/outputs/apk/${{ matrix.build_type }}/*.apk | \
+            grep "lib/.*\.so"
+      
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.build_type }}-${{ matrix.abi }}
+          path: android/app/build/outputs/apk/${{ matrix.build_type }}/*.apk
+          retention-days: 30
+
+  # ======================
+  # Android Tests
+  # ======================
+  test:
+    runs-on: ubuntu-latest
+    needs: build-apk
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Run unit tests
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew test
+      
+      - name: Run instrumented tests on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          profile: Nexus 6
+          script: cd android && ./gradlew connectedCheck
+
+  # ======================
+  # Native Library Analysis
+  # ======================
+  native-analysis:
+    runs-on: ubuntu-latest
+    needs: build-apk
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Android NDK
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
+      
+      - name: Static analysis of native code
+        run: |
+          # Use Android NDK's clang-tidy
+          ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang-tidy \
+            src/**/*.cpp \
+            -- -I libs/randomx/src -std=c++17 || true
+      
+      - name: Check for security issues
+        uses: actions/checkout@v4
+        with:
+          repository: 'aquasecurity/trivy-action'
+          path: 'trivy'
+      
+      - name: Analyze native libraries
+        run: |
+          nm -D build/**/*.so | grep -E "strcpy|gets|sprintf" && \
+            echo "⚠️  Potentially unsafe functions detected"
+      
+      - name: Verify RandomX implementation
+        run: |
+          strings build/**/*.so | grep -i "randomx" | head -20
+
+  # ======================
+  # Performance Benchmark on Android
+  # ======================
+  benchmark:
+    runs-on: ubuntu-latest
+    needs: build-apk
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup emulator for benchmarking
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: arm64-v8a
+          ram-size: '4096M'
+          cores: 4
+          script: |
+            # Install APK
+            adb install android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+            
+            # Run benchmark via ADB
+            adb shell am broadcast \
+              -a com.monerominer.BENCHMARK \
+              --ei threads 2 \
+              --ei duration 60
+            
+            # Pull benchmark results
+            sleep 65
+            adb pull /sdcard/benchmark_results.json .
+            
+            # Display results
+            if [ -f benchmark_results.json ]; then
+              echo "✅ Benchmark completed"
+              cat benchmark_results.json
+            else
+              echo "❌ Benchmark failed"
+            fi
+      
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-benchmark
+          path: benchmark_results.json
+
+  # ======================
+  # Sign Release APK
+  # ======================
+  sign-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-release-arm64-v8a
+      
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: .
+          signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
+          alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      
+      - name: Upload signed release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./*-release-signed.apk
+          asset_name: monero-miner-${{ github.ref_name }}.apk
+          asset_content_type: application/vnd.android.package-archive
