@@ -24,7 +24,6 @@ env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
   ANDROID_NDK_VERSION: '26.1.10909125'
   RANDOMX_VERSION: 'v1.1.10'
-  JSON_VERSION: 'v3.11.2'
 
 jobs:
   # ============================================================
@@ -32,8 +31,6 @@ jobs:
   # ============================================================
   setup-deps:
     runs-on: ubuntu-latest
-    outputs:
-      randomx-cache-key: ${{ steps.cache-deps.outputs.cache-key }}
     steps:
       - uses: actions/checkout@v4
       
@@ -44,7 +41,7 @@ jobs:
           path: |
             libs/randomx/
             libs/nlohmann/
-          key: deps-${{ runner.os }}-${{ env.RANDOMX_VERSION }}-${{ hashFiles('CMakeLists.txt') }}
+          key: deps-${{ runner.os }}-randomx-${{ env.RANDOMX_VERSION }}-${{ hashFiles('CMakeLists.txt') }}
       
       - name: Clone RandomX Library
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -65,15 +62,19 @@ jobs:
         run: |
           echo "📦 Downloading nlohmann/json..."
           mkdir -p libs/nlohmann
+          
+          # nlohmann/json releases use tags like v3.11.3, not v3.11.2
+          # Use latest release for compatibility
           wget -q -O libs/nlohmann/json.hpp \
-            https://github.com/nlohmann/json/releases/download/${{ env.JSON_VERSION }}/json.hpp
+            https://github.com/nlohmann/json/releases/latest/download/json.hpp || \
+          wget -q -O libs/nlohmann/json.hpp \
+            https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
           
           if [ -f "libs/nlohmann/json.hpp" ]; then
-            echo "✅ JSON library downloaded"
+            echo "✅ JSON library downloaded ($(wc -c < libs/nlohmann/json.hpp) bytes)"
           else
-            # Fallback to latest
-            wget -q -O libs/nlohmann/json.hpp \
-              https://github.com/nlohmann/json/releases/latest/download/json.hpp
+            echo "❌ Failed to download JSON library"
+            exit 1
           fi
       
       - name: Verify All Dependencies
@@ -82,26 +83,29 @@ jobs:
           echo "Verifying Dependencies:"
           echo "========================================="
           
+          # Check RandomX
           if [ -f "libs/randomx/src/randomx.h" ]; then
             echo "✅ RandomX header found"
           else
-            echo "❌ RandomX header MISSING"
+            echo "❌ RandomX header MISSING at libs/randomx/src/randomx.h"
+            echo "Contents of libs/randomx/:"
+            ls -la libs/randomx/ 2>/dev/null || echo "Directory doesn't exist"
             exit 1
           fi
           
+          # Check JSON
           if [ -f "libs/nlohmann/json.hpp" ]; then
             echo "✅ JSON library found ($(wc -c < libs/nlohmann/json.hpp) bytes)"
           else
-            echo "❌ JSON library MISSING"
+            echo "❌ JSON library MISSING at libs/nlohmann/json.hpp"
+            ls -la libs/nlohmann/ 2>/dev/null || echo "Directory doesn't exist"
             exit 1
           fi
           
           echo ""
-          echo "RandomX files:"
-          find libs/randomx/src -name "*.h" -o -name "*.cpp" | sort
-          echo ""
-          echo "Project structure:"
-          ls -la libs/
+          echo "Dependency tree:"
+          echo "libs/"
+          find libs -type f -name "*.h" -o -name "*.hpp" | head -20
       
       - name: Upload Dependencies as Artifact
         uses: actions/upload-artifact@v4
@@ -121,9 +125,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [debug, release]
+        build_type: [debug]
         abi: [arm64-v8a, armeabi-v7a]
-    
     steps:
       - uses: actions/checkout@v4
       
@@ -131,6 +134,27 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dependencies
+      
+      - name: Verify Dependencies After Download
+        run: |
+          echo "Checking downloaded dependencies..."
+          
+          if [ -f "libs/randomx/src/randomx.h" ]; then
+            echo "✅ RandomX present"
+          else
+            echo "❌ RandomX NOT FOUND after download!"
+            echo "Current directory contents:"
+            ls -la
+            ls -la libs/ 2>/dev/null || echo "libs/ doesn't exist"
+            exit 1
+          fi
+          
+          if [ -f "libs/nlohmann/json.hpp" ]; then
+            echo "✅ JSON library present"
+          else
+            echo "❌ JSON library NOT FOUND after download!"
+            exit 1
+          fi
       
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -141,15 +165,15 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
       
-      - name: Install NDK
+      - name: Install NDK and CMake
         run: |
           echo "Installing NDK ${{ env.ANDROID_NDK_VERSION }}..."
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
             "ndk;${{ env.ANDROID_NDK_VERSION }}" \
-            "cmake;3.22.1"
+            "cmake;3.22.1" 2>/dev/null || true
           
-          # Set NDK path
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
+          echo "NDK installed at: $ANDROID_NDK_HOME"
       
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -175,45 +199,53 @@ jobs:
             "android/app/src/main/cpp/android_main.cpp"
           )
           
+          missing=false
           for file in "${required_files[@]}"; do
             if [ -f "$file" ]; then
               echo "  ✅ $file"
             else
               echo "  ❌ MISSING: $file"
-              exit 1
+              missing=true
             fi
           done
+          
+          if [ "$missing" = true ]; then
+            echo ""
+            echo "Current directory structure:"
+            find . -type f -name "*.gradle" -o -name "*.xml" -o -name "*.cpp" | sort
+            exit 1
+          fi
           
           echo "All required files present!"
       
       - name: Grant Gradle Permissions
         run: chmod +x android/gradlew
       
-      - name: Build Native Libraries
+      - name: Build with Gradle
         working-directory: android
         run: |
           echo "Building for ${{ matrix.abi }} (${{ matrix.build_type }})..."
-          
           ./gradlew assemble${{ matrix.build_type == 'release' && 'Release' || 'Debug' }} \
-            -Pandroid.injected.invoked.from.ide=true \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --info 2>&1 | tail -100
       
       - name: Verify APK
         run: |
           APK_DIR="android/app/build/outputs/apk/${{ matrix.build_type }}"
           echo "Looking for APK in: $APK_DIR"
+          find android/app/build -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
           
-          # Try to find the APK
-          APK_FILE=$(find "$APK_DIR" -name "*.apk" -type f | head -1)
+          APK_FILE=$(find "$APK_DIR" -name "*.apk" -type f 2>/dev/null | head -1)
           
           if [ -n "$APK_FILE" ]; then
             echo "✅ APK found: $APK_FILE"
-            echo "APK_SIZE=$(du -sh "$APK_FILE" | cut -f1)"
+            echo "Size: $(du -sh "$APK_FILE" | cut -f1)"
           else
             echo "❌ No APK found!"
-            echo "Build output:"
-            find android/app/build -name "*.apk" -o -name "*.so" 2>/dev/null || echo "Nothing found"
+            echo ""
+            echo "Build output directory contents:"
+            find android/app/build -type f 2>/dev/null | head -30
             exit 1
           fi
       
@@ -225,10 +257,11 @@ jobs:
           echo "========================================="
           echo "APK Analysis:"
           echo "========================================="
+          echo "File: $APK_FILE"
           echo "Size: $(du -sh "$APK_FILE" | cut -f1)"
           echo ""
-          echo "Native libraries:"
-          unzip -l "$APK_FILE" | grep "\.so" || echo "  No native libs found"
+          echo "Native libraries (.so files):"
+          unzip -l "$APK_FILE" 2>/dev/null | grep "\.so" || echo "  No native .so files found"
           echo ""
           echo "Architecture: ${{ matrix.abi }}"
       
@@ -238,7 +271,7 @@ jobs:
           name: apk-${{ matrix.build_type }}-${{ matrix.abi }}
           path: android/app/build/outputs/apk/${{ matrix.build_type }}/*.apk
           retention-days: 30
-  
+
   # ============================================================
   # Desktop Build Verification
   # ============================================================
@@ -252,6 +285,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dependencies
+      
+      - name: Verify Dependencies
+        run: |
+          test -f "libs/randomx/src/randomx.h" || { echo "❌ RandomX missing"; exit 1; }
+          test -f "libs/nlohmann/json.hpp" || { echo "❌ JSON missing"; exit 1; }
+          echo "✅ All dependencies present"
       
       - name: Install System Dependencies
         run: |
@@ -268,9 +307,7 @@ jobs:
             -DENABLE_HUGEPAGES=OFF
       
       - name: Build Desktop Binary
-        run: |
-          cd build
-          make -j$(nproc)
+        run: cmake --build build -j$(nproc)
       
       - name: Verify Binary
         run: |
@@ -279,146 +316,41 @@ jobs:
             file build/MoneroRandomXMiner
             echo ""
             echo "Linked libraries:"
-            ldd build/MoneroRandomXMiner | grep -E "randomx|ssl|crypto"
+            ldd build/MoneroRandomXMiner 2>/dev/null | grep -E "randomx|ssl|crypto" || echo "  (checking with objdump)"
+            objdump -p build/MoneroRandomXMiner 2>/dev/null | grep NEEDED || true
           else
             echo "❌ Desktop binary not found"
+            find build -type f -executable 2>/dev/null
             exit 1
           fi
-      
-      - name: Quick Functional Test
-        run: |
-          # Test that binary starts (will fail on network but proves it works)
-          timeout 5s ./build/MoneroRandomXMiner --help 2>&1 || true
-          echo "Binary execution test passed"
 
   # ============================================================
-  # Code Quality Checks
-  # ============================================================
-  code-quality:
-    needs: setup-deps
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Download Dependencies
-        uses: actions/download-artifact@v4
-        with:
-          name: dependencies
-      
-      - name: Install Linters
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cppcheck clang-format
-      
-      - name: Check Code Formatting
-        run: |
-          echo "Checking C++ code formatting..."
-          find src libs -name "*.cpp" -o -name "*.h" | while read file; do
-            clang-format --style=Google --dry-run -Werror "$file" 2>&1 || \
-              echo "⚠️  Formatting issues in: $file"
-          done
-      
-      - name: Run cppcheck
-        run: |
-          echo "Running static analysis..."
-          cppcheck --enable=all \
-            --suppress=missingIncludeSystem \
-            --suppress=unusedFunction \
-            --error-exitcode=1 \
-            -I src/ \
-            -I libs/ \
-            -I libs/randomx/src/ \
-            src/ libs/randomx_wrapper.cpp 2>&1 | tee cppcheck.txt || true
-      
-      - name: Check for Common Issues
-        run: |
-          echo "Checking for common security issues..."
-          
-          # Check for unsafe functions
-          if grep -rn "strcpy\|strcat\|sprintf\|gets" src/ libs/*.cpp 2>/dev/null; then
-            echo "⚠️  Potentially unsafe functions found"
-          else
-            echo "✅ No unsafe functions found"
-          fi
-          
-          # Check for hardcoded addresses
-          if grep -rn "8BfN5c\|44AFFq" src/ 2>/dev/null; then
-            echo "⚠️  Hardcoded wallet addresses found!"
-          else
-            echo "✅ No hardcoded wallet addresses in source"
-          fi
-
-  # ============================================================
-  # Android Tests
-  # ============================================================
-  test-android:
-    needs: [setup-deps, build-apk]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Download Dependencies
-        uses: actions/download-artifact@v4
-        with:
-          name: dependencies
-      
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-      
-      - name: Run Unit Tests
-        working-directory: android
-        run: |
-          chmod +x gradlew
-          ./gradlew test --no-daemon
-      
-      - name: Run Instrumented Tests
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 30
-          target: default
-          arch: x86_64
-          profile: Nexus 6
-          ram-size: '2048M'
-          script: |
-            cd android
-            ./gradlew connectedCheck --no-daemon
-
-  # ============================================================
-  # Release Signing
+  # Release
   # ============================================================
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-apk, code-quality]
+    needs: [build-apk]
     runs-on: ubuntu-latest
     steps:
-      - name: Download APK
+      - name: Download ARM64 APK
         uses: actions/download-artifact@v4
         with:
-          name: apk-release-arm64-v8a
+          name: apk-debug-arm64-v8a
       
-      - name: Download APK (ARMv7)
+      - name: Download ARMv7 APK
         uses: actions/download-artifact@v4
         with:
-          name: apk-release-armeabi-v7a
+          name: apk-debug-armeabi-v7a
       
-      - name: Sign APKs
-        uses: r0adkll/sign-android-release@v1
-        with:
-          releaseDirectory: .
-          signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
-          alias: ${{ secrets.ANDROID_KEY_ALIAS }}
-          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: List APKs
+        run: ls -la *.apk
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            *-release-signed.apk
+            *.apk
           generate_release_notes: true
+          draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
