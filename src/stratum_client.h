@@ -5,9 +5,6 @@
 #include <thread>
 #include <mutex>
 #include <functional>
-#include <unordered_map>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -53,7 +50,6 @@ private:
     void handle_message(const std::string& message);
     void send_message(const std::string& message);
     bool resolve_host();
-    void cleanup_ssl();
     
     std::string m_pool_host;
     uint16_t m_pool_port;
@@ -63,8 +59,6 @@ private:
     bool m_use_ssl;
     
     int m_socket_fd{-1};
-    SSL* m_ssl{nullptr};
-    SSL_CTX* m_ssl_ctx{nullptr};
     struct sockaddr_in m_server_addr{};
     
     std::atomic<bool> m_connected{false};
