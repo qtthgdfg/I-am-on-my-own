@@ -103,7 +103,7 @@
             android:id="@+id/save_button"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="SAVE & CONTINUE"
+            android:text="SAVE SETTINGS"
             android:backgroundTint="#00C853"
             android:textColor="#FFFFFF"
             android:textStyle="bold"/>
