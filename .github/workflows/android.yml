@@ -154,14 +154,14 @@ jobs:
           
           # Create gradle-wrapper.properties
           cat > gradle/wrapper/gradle-wrapper.properties << PROPS
-distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=https\\://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip
-networkTimeout=10000
-validateDistributionUrl=true
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
-PROPS
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\\://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+           PROPS
           echo "✅ gradle-wrapper.properties created"
           
           # Ensure gradlew exists and is executable
@@ -172,21 +172,7 @@ PROPS
 ##############################################################################
 ## Gradle start up script
 ##############################################################################
-APP_NAME="Gradle"
-APP_BASE_NAME=$(basename "$0")
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
-CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
-exec java $DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS \
-  -classpath "$CLASSPATH" \
-  org.gradle.wrapper.GradleWrapperMain "$@"
-GRADLEW
-          fi
-          chmod +x gradlew
-          
-          echo ""
-          echo "Gradle wrapper setup complete:"
-          ls -la gradlew gradle/wrapper/
-      
+ 
       # ============================================================
       # Cache Gradle Downloads
       # ============================================================
