@@ -1,3 +1,5 @@
+// FILE: MoneroRandomXMiner/android/settings.gradle
+
 pluginManagement {
     repositories {
         google()
