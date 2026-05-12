@@ -216,6 +216,17 @@
                 app:backgroundTint="#E94560"/>
         </LinearLayout>
 
+        <!-- Settings Button -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/settings_button"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="⚙ SETTINGS"
+            android:layout_marginTop="8dp"
+            android:textColor="#FFFFFF"
+            app:backgroundTint="#FF9800"
+            app:cornerRadius="8dp"/>
+
         <!-- Log Output -->
         <ScrollView
             android:layout_width="match_parent"
