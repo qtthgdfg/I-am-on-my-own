@@ -31,7 +31,7 @@ jobs:
           path: |
             libs/randomx/
             libs/nlohmann/
-          key: deps-v4-${{ env.RANDOMX_VERSION }}-${{ hashFiles('CMakeLists.txt') }}
+          key: deps-v5-${{ env.RANDOMX_VERSION }}-${{ hashFiles('CMakeLists.txt') }}
       
       - name: Clone RandomX
         if: steps.cache.outputs.cache-hit != 'true'
@@ -40,11 +40,7 @@ jobs:
           mkdir -p libs
           git clone --depth 1 --branch ${{ env.RANDOMX_VERSION }} \
             https://github.com/tevador/RandomX.git libs/randomx
-          
-          if [ ! -f "libs/randomx/src/randomx.h" ]; then
-            echo "❌ RandomX clone failed"
-            exit 1
-          fi
+          test -f "libs/randomx/src/randomx.h" || { echo "❌ RandomX clone failed"; exit 1; }
           echo "✅ RandomX cloned"
       
       - name: Download JSON library
@@ -52,25 +48,12 @@ jobs:
         run: |
           echo "📦 Downloading JSON library..."
           mkdir -p libs/nlohmann
-          
           wget -q -O libs/nlohmann/json.hpp \
             https://github.com/nlohmann/json/releases/latest/download/json.hpp || \
           curl -fsSL -o libs/nlohmann/json.hpp \
             https://github.com/nlohmann/json/releases/latest/download/json.hpp
-          
-          if [ ! -f "libs/nlohmann/json.hpp" ]; then
-            echo "❌ JSON download failed"
-            exit 1
-          fi
+          test -f "libs/nlohmann/json.hpp" || { echo "❌ JSON download failed"; exit 1; }
           echo "✅ JSON downloaded"
-      
-      - name: Verify dependencies
-        run: |
-          echo "========================================="
-          echo "Dependencies check:"
-          echo "========================================="
-          test -f "libs/randomx/src/randomx.h" && echo "✅ RandomX" || { echo "❌ RandomX missing"; exit 1; }
-          test -f "libs/nlohmann/json.hpp" && echo "✅ JSON" || { echo "❌ JSON missing"; exit 1; }
       
       - name: Upload dependencies
         uses: actions/upload-artifact@v4
@@ -102,86 +85,20 @@ jobs:
           name: deps
           path: libs/
       
-      - name: Verify and fix dependency paths
+      - name: Fix dependency paths
         run: |
-          echo "========================================="
-          echo "Checking dependency locations..."
-          echo "========================================="
+          echo "Fixing dependency paths..."
           
-          # Debug: show current structure
-          echo "Current directory: $(pwd)"
-          echo ""
-          echo "Looking for randomx.h:"
-          find . -name "randomx.h" 2>/dev/null || echo "  NOT FOUND"
-          echo ""
-          echo "Looking for json.hpp:"
-          find . -name "json.hpp" 2>/dev/null || echo "  NOT FOUND"
+          # Fix nested structures
+          [ -d "libs/randomx/randomx" ] && cp -r libs/randomx/randomx/* libs/randomx/ && rm -rf libs/randomx/randomx
+          [ -f "libs/json.hpp" ] && mkdir -p libs/nlohmann && mv libs/json.hpp libs/nlohmann/
+          [ -d "randomx" ] && mv randomx libs/
+          [ -d "nlohmann" ] && mv nlohmann libs/
           
-          # Fix nested structure from artifact
-          if [ -d "libs/randomx/randomx" ]; then
-            echo "Fixing nested libs/randomx/randomx..."
-            cp -r libs/randomx/randomx/* libs/randomx/ 2>/dev/null || true
-            rm -rf libs/randomx/randomx 2>/dev/null || true
-          fi
-          
-          # Fix json.hpp location
-          if [ -f "libs/json.hpp" ] && [ ! -f "libs/nlohmann/json.hpp" ]; then
-            echo "Moving json.hpp to libs/nlohmann/"
-            mkdir -p libs/nlohmann
-            mv libs/json.hpp libs/nlohmann/
-          fi
-          
-          # Fix if directories ended up at root level
-          if [ -d "randomx" ] && [ -f "randomx/src/randomx.h" ] && [ ! -d "libs/randomx" ]; then
-            echo "Moving randomx/ to libs/randomx/"
-            mkdir -p libs
-            mv randomx libs/
-          fi
-          
-          if [ -d "nlohmann" ] && [ -f "nlohmann/json.hpp" ] && [ ! -d "libs/nlohmann" ]; then
-            echo "Moving nlohmann/ to libs/nlohmann/"
-            mkdir -p libs
-            mv nlohmann libs/
-          fi
-          
-          # Last resort: search and copy
-          if [ ! -f "libs/randomx/src/randomx.h" ]; then
-            RANDOMX_H=$(find . -name "randomx.h" -type f 2>/dev/null | head -1)
-            if [ -n "$RANDOMX_H" ]; then
-              echo "Found randomx.h at: $RANDOMX_H"
-              RANDOMX_D=$(dirname $(dirname "$RANDOMX_H"))
-              echo "Copying from $RANDOMX_D to libs/randomx/"
-              mkdir -p libs/randomx
-              cp -r "$RANDOMX_D"/* libs/randomx/ 2>/dev/null || true
-            fi
-          fi
-          
-          if [ ! -f "libs/nlohmann/json.hpp" ]; then
-            JSON_H=$(find . -name "json.hpp" -type f 2>/dev/null | head -1)
-            if [ -n "$JSON_H" ]; then
-              echo "Found json.hpp at: $JSON_H"
-              mkdir -p libs/nlohmann
-              cp "$JSON_H" libs/nlohmann/
-            fi
-          fi
-          
-          echo ""
-          echo "Final verification:"
-          if [ -f "libs/randomx/src/randomx.h" ]; then
-            echo "✅ RandomX at libs/randomx/src/randomx.h"
-          else
-            echo "❌ RandomX STILL MISSING!"
-            find . -name "randomx.h" 2>/dev/null
-            exit 1
-          fi
-          
-          if [ -f "libs/nlohmann/json.hpp" ]; then
-            echo "✅ JSON at libs/nlohmann/json.hpp"
-          else
-            echo "❌ JSON STILL MISSING!"
-            find . -name "json.hpp" 2>/dev/null
-            exit 1
-          fi
+          # Verify
+          test -f "libs/randomx/src/randomx.h" || { echo "❌ RandomX missing"; find . -name "randomx.h"; exit 1; }
+          test -f "libs/nlohmann/json.hpp" || { echo "❌ JSON missing"; find . -name "json.hpp"; exit 1; }
+          echo "✅ Dependencies verified"
       
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -202,29 +119,13 @@ jobs:
       - name: Setup Gradle wrapper
         working-directory: android
         run: |
-          echo "========================================="
-          echo "Setting up Gradle wrapper..."
-          echo "========================================="
-          
           mkdir -p gradle/wrapper
           
-          # Download gradle-wrapper.jar if missing
           if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Downloading gradle-wrapper.jar..."
             wget -q -O gradle/wrapper/gradle-wrapper.jar \
               "https://raw.githubusercontent.com/gradle/gradle/v${{ env.GRADLE_VERSION }}.0/gradle/wrapper/gradle-wrapper.jar"
-            
-            if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-              echo "❌ Failed to download gradle-wrapper.jar"
-              exit 1
-            fi
-            echo "✅ gradle-wrapper.jar downloaded"
-          else
-            echo "✅ gradle-wrapper.jar exists"
           fi
           
-          # Create gradle-wrapper.properties
-          echo "Creating gradle-wrapper.properties..."
           echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
           echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
           echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
@@ -233,48 +134,23 @@ jobs:
           echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
           echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
           
-          # Verify
-          if ! grep -q "distributionUrl" gradle/wrapper/gradle-wrapper.properties; then
-            echo "❌ distributionUrl missing!"
-            exit 1
-          fi
-          
           chmod +x gradlew
           echo "✅ Gradle wrapper ready"
       
-      - name: Verify project structure
+      - name: Verify structure
         run: |
-          echo "========================================="
-          echo "Verifying project structure..."
-          echo "========================================="
-          
           FILES=(
             "libs/randomx/src/randomx.h"
             "libs/nlohmann/json.hpp"
-            "android/gradle/wrapper/gradle-wrapper.jar"
-            "android/gradle/wrapper/gradle-wrapper.properties"
             "android/build.gradle"
             "android/app/build.gradle"
             "android/app/src/main/AndroidManifest.xml"
             "android/app/src/main/cpp/CMakeLists.txt"
             "android/app/src/main/cpp/android_main.cpp"
           )
-          
-          ALL_OK=true
           for file in "${FILES[@]}"; do
-            if [ -f "$file" ]; then
-              echo "  ✅ $file"
-            else
-              echo "  ❌ MISSING: $file"
-              ALL_OK=false
-            fi
+            [ -f "$file" ] && echo "  ✅ $file" || { echo "  ❌ MISSING: $file"; exit 1; }
           done
-          
-          if [ "$ALL_OK" = false ]; then
-            echo ""
-            echo "Missing required files!"
-            exit 1
-          fi
           echo "✅ All files present"
       
       - name: Cache Gradle
@@ -290,35 +166,26 @@ jobs:
         working-directory: android
         run: |
           echo "========================================="
-          echo "BUILD START - ${{ matrix.abi }}"
-          echo "========================================="
+          echo "BUILD: ${{ matrix.abi }}"
           echo "Time: $(date)"
-          echo ""
+          echo "========================================="
           
-          # Run build and capture output
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            2>&1 | tee ../build-${{ matrix.abi }}.log
-          
+          # Run build - save log to PROJECT ROOT (not android/)
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee ../build-${{ matrix.abi }}.log
           RESULT=${PIPESTATUS[0]}
           
-          # Write status file
           echo "$RESULT" > ../build-status-${{ matrix.abi }}.txt
           
           echo ""
-          echo "========================================="
           if [ $RESULT -eq 0 ]; then
-            echo "✅ BUILD SUCCESSFUL - ${{ matrix.abi }}"
+            echo "✅ BUILD SUCCESSFUL"
           else
-            echo "❌ BUILD FAILED - ${{ matrix.abi }} (exit code: $RESULT)"
+            echo "❌ BUILD FAILED (exit: $RESULT)"
             echo ""
-            echo "Last 40 lines:"
-            tail -40 ../build-${{ matrix.abi }}.log
+            echo "Last 30 lines:"
+            tail -30 ../build-${{ matrix.abi }}.log
+            exit 1
           fi
-          echo "========================================="
-          
-          exit $RESULT
       
       - name: Upload APK
         if: success()
@@ -327,90 +194,94 @@ jobs:
           name: apk-${{ matrix.abi }}
           path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 30
+      
+      - name: Upload build log (ALWAYS)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.abi }}
+          path: |
+            build-${{ matrix.abi }}.log
+            build-status-${{ matrix.abi }}.txt
+          retention-days: 7
 
   # ============================================================
-  # STEP 3: Collect and combine all build logs
+  # STEP 3: Combine logs
   # ============================================================
   collect-logs:
     needs: build
     runs-on: ubuntu-latest
     if: always()
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Download all build logs
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: build-log-*
+          path: downloaded-logs/
+      
       - name: Create combined log
         run: |
-          echo "===========================================================" > combined-build.log
-          echo "MONERO RANDOMX MINER - COMBINED BUILD LOG" >> combined-build.log
-          echo "===========================================================" >> combined-build.log
-          echo "" >> combined-build.log
-          echo "Repository: ${{ github.repository }}" >> combined-build.log
-          echo "Branch: ${{ github.ref_name }}" >> combined-build.log
-          echo "Commit: ${{ github.sha }}" >> combined-build.log
-          echo "Workflow: ${{ github.workflow }}" >> combined-build.log
-          echo "Run ID: ${{ github.run_id }}" >> combined-build.log
-          echo "Date: $(date)" >> combined-build.log
-          echo "" >> combined-build.log
-          echo "===========================================================" >> combined-build.log
-          echo "" >> combined-build.log
-      
-      - name: Download arm64-v8a build log
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: build-log-arm64-v8a
-          path: logs/
-      
-      - name: Download armeabi-v7a build log
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: build-log-armeabi-v7a
-          path: logs/
-      
-      - name: Append arm64 log to combined
-        continue-on-error: true
-        run: |
+          # Header
+          cat > combined-build.log << HEADER
+===========================================================
+MONERO RANDOMX MINER - COMBINED BUILD LOG
+===========================================================
+
+Repository: ${{ github.repository }}
+Branch: ${{ github.ref_name }}
+Commit: ${{ github.sha }}
+Workflow: ${{ github.workflow }}
+Run ID: ${{ github.run_id }}
+Date: $(date -u)
+
+===========================================================
+
+HEADER
+          
+          # Show what was downloaded
+          echo "Downloaded logs structure:"
+          find downloaded-logs -type f 2>/dev/null || echo "  No logs found"
+          echo ""
+          
+          # Append arm64 log
           echo "===========================================================" >> combined-build.log
           echo "BUILD LOG: arm64-v8a" >> combined-build.log
           echo "===========================================================" >> combined-build.log
-          if [ -f "logs/build-arm64-v8a.log" ]; then
-            cat logs/build-arm64-v8a.log >> combined-build.log
+          if [ -f "downloaded-logs/build-log-arm64-v8a/build-arm64-v8a.log" ]; then
+            cat downloaded-logs/build-log-arm64-v8a/build-arm64-v8a.log >> combined-build.log
+          elif [ -f "downloaded-logs/build-log-arm64-v8a/build.log" ]; then
+            cat downloaded-logs/build-log-arm64-v8a/build.log >> combined-build.log
           else
-            echo "(No arm64-v8a build log found)" >> combined-build.log
+            echo "(arm64-v8a log not available)" >> combined-build.log
           fi
           echo "" >> combined-build.log
-      
-      - name: Append armeabi-v7a log to combined
-        continue-on-error: true
-        run: |
+          
+          # Append armv7 log
           echo "===========================================================" >> combined-build.log
           echo "BUILD LOG: armeabi-v7a" >> combined-build.log
           echo "===========================================================" >> combined-build.log
-          if [ -f "logs/build-armeabi-v7a.log" ]; then
-            cat logs/build-armeabi-v7a.log >> combined-build.log
+          if [ -f "downloaded-logs/build-log-armeabi-v7a/build-armeabi-v7a.log" ]; then
+            cat downloaded-logs/build-log-armeabi-v7a/build-armeabi-v7a.log >> combined-build.log
+          elif [ -f "downloaded-logs/build-log-armeabi-v7a/build.log" ]; then
+            cat downloaded-logs/build-log-armeabi-v7a/build.log >> combined-build.log
           else
-            echo "(No armeabi-v7a build log found)" >> combined-build.log
+            echo "(armeabi-v7a log not available)" >> combined-build.log
           fi
           echo "" >> combined-build.log
-      
-      - name: Add build summary
-        run: |
+          
+          # Summary
           echo "===========================================================" >> combined-build.log
           echo "BUILD SUMMARY" >> combined-build.log
           echo "===========================================================" >> combined-build.log
           
-          # Count errors and warnings
-          ERRORS=$(grep -ci "error\|FAILED\|fatal" combined-build.log 2>/dev/null || echo "0")
-          WARNINGS=$(grep -ci "warning" combined-build.log 2>/dev/null || echo "0")
-          
-          echo "Total errors/warnings found:" >> combined-build.log
-          echo "  Errors: $ERRORS" >> combined-build.log
-          echo "  Warnings: $WARNINGS" >> combined-build.log
-          
-          # Check if APKs were built
           if grep -q "BUILD SUCCESSFUL" combined-build.log 2>/dev/null; then
-            echo "APK Build: ✅ SUCCESSFUL" >> combined-build.log
+            echo "Status: ✅ AT LEAST ONE BUILD SUCCEEDED" >> combined-build.log
           else
-            echo "APK Build: ❌ FAILED (check logs above)" >> combined-build.log
+            echo "Status: ❌ ALL BUILDS FAILED" >> combined-build.log
           fi
           
           echo "" >> combined-build.log
@@ -424,6 +295,22 @@ jobs:
           name: combined-build-log
           path: combined-build.log
           retention-days: 30
+      
+      - name: Print log summary
+        run: |
+          echo "========================================="
+          echo "BUILD LOG SUMMARY"
+          echo "========================================="
+          echo ""
+          echo "Combined log size: $(wc -c < combined-build.log) bytes"
+          echo "Lines: $(wc -l < combined-build.log)"
+          echo ""
+          
+          # Show key lines
+          echo "--- Build Results ---"
+          grep -E "BUILD (SUCCESSFUL|FAILED)|error:|FAILURE:" combined-build.log 2>/dev/null | tail -10 || echo "No results found"
+          echo ""
+          echo "Full log available as artifact: combined-build-log"
 
   # ============================================================
   # STEP 4: Release
@@ -443,13 +330,6 @@ jobs:
         with:
           name: combined-build-log
       
-      - name: List release files
-        run: |
-          echo "Files for release:"
-          find . -name "*.apk" -o -name "*.log" | while read f; do
-            echo "  $f ($(du -sh "$f" | cut -f1))"
-          done
-      
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -458,20 +338,5 @@ jobs:
             apk-armeabi-v7a/*.apk
             combined-build.log
           generate_release_notes: true
-          draft: false
-          name: "Monero Miner ${{ github.ref_name }}"
-          body: |
-            ## Monero RandomX Miner - ${{ github.ref_name }}
-            
-            ### Build Details
-            - **Architecture**: arm64-v8a, armeabi-v7a
-            - **RandomX Version**: ${{ env.RANDOMX_VERSION }}
-            - **NDK Version**: ${{ env.ANDROID_NDK_VERSION }}
-            - **Build Date**: $(date)
-            
-            ### Files
-            - `apk-arm64-v8a/` - APK for 64-bit ARM devices
-            - `apk-armeabi-v7a/` - APK for 32-bit ARM devices
-            - `combined-build.log` - Complete build log
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
