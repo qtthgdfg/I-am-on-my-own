@@ -9,7 +9,7 @@
 
 namespace monero {
 
-// TargetHelper
+// ==================== TargetHelper ====================
 uint64_t TargetHelper::compact_to_uint64(const std::string& target_hex) {
     uint64_t target = 0;
     for (size_t i = 0; i < target_hex.length() && i < 16; i += 2) {
@@ -35,7 +35,7 @@ double TargetHelper::difficulty_from_target(uint64_t target) {
 uint64_t TargetHelper::from_hex_target(const std::string& s) { return compact_to_uint64(s); }
 std::string TargetHelper::to_hex_target(uint64_t t) { return uint64_to_compact(t); }
 
-// BlobHelper
+// ==================== BlobHelper ====================
 std::vector<uint8_t> BlobHelper::hex_to_bytes(const std::string& hex) {
     std::vector<uint8_t> bytes;
     for (size_t i = 0; i < hex.length(); i += 2)
@@ -64,7 +64,7 @@ std::vector<uint8_t> BlobHelper::extract_extra_nonce(const std::vector<uint8_t>&
 bool BlobHelper::validate_blob(const std::vector<uint8_t>& blob) { return blob.size() >= 76; }
 size_t BlobHelper::get_nonce_offset(const std::vector<uint8_t>&) { return 39; }
 
-// JobManager
+// ==================== JobManager ====================
 JobManager::JobManager() { m_stats.reset(); }
 JobManager::~JobManager() {}
 void JobManager::set_job_callback(JobCallback cb) { std::lock_guard<std::mutex> l(m_mutex); m_job_callback = std::move(cb); }
@@ -80,13 +80,20 @@ MiningJob JobManager::get_current_job() const { std::lock_guard<std::mutex> l(m_
 bool JobManager::has_job() const { std::lock_guard<std::mutex> l(m_mutex); return !m_current_job.blob.empty(); }
 void JobManager::record_share(const ShareResult& r) {
     std::lock_guard<std::mutex> l(m_mutex);
-    if(r.accepted) m_stats.accepted_shares.fetch_add(1); else m_stats.rejected_shares.fetch_add(1);
+    if(r.accepted) m_stats.accepted_shares++; else m_stats.rejected_shares++;
 }
-MiningStats JobManager::get_stats() const { std::lock_guard<std::mutex> l(m_mutex); return m_stats; }
+MiningStats JobManager::get_stats() const {
+    std::lock_guard<std::mutex> l(m_mutex);
+    MiningStats s;
+    s.total_hashes = m_stats.total_hashes;
+    s.accepted_shares = m_stats.accepted_shares;
+    s.rejected_shares = m_stats.rejected_shares;
+    return s;
+}
 void JobManager::reset_stats() { std::lock_guard<std::mutex> l(m_mutex); m_stats.reset(); }
 void JobManager::set_job_history_size(size_t s) { std::lock_guard<std::mutex> l(m_mutex); m_max_job_history = s; }
 
-// WorkerPool
+// ==================== WorkerPool ====================
 WorkerPool::WorkerPool(uint32_t n) : m_num_workers(n) {}
 WorkerPool::~WorkerPool() {}
 void WorkerPool::configure_workers(bool numa, bool aff) {
@@ -98,7 +105,7 @@ std::vector<WorkerPool::WorkerConfig> WorkerPool::get_worker_configs() const { r
 void WorkerPool::detect_numa_topology() {}
 uint32_t WorkerPool::get_optimal_thread_count() const { return std::max(1u, std::thread::hardware_concurrency()); }
 
-// DifficultyManager
+// ==================== DifficultyManager ====================
 DifficultyManager::DifficultyManager(double d) : m_current_difficulty(d) { m_current_target = difficulty_to_target(d); }
 void DifficultyManager::update_target(double d) { std::lock_guard<std::mutex> l(m_mutex); m_current_difficulty = d; m_current_target = difficulty_to_target(d); }
 uint64_t DifficultyManager::get_current_target() const { std::lock_guard<std::mutex> l(m_mutex); return m_current_target; }
