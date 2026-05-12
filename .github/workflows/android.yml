@@ -1,15 +1,9 @@
 # FILE: MoneroRandomXMiner/.github/workflows/android.yml
-name: Android Build & Test
+name: Android Build
 
 on:
   push:
     branches: [ main, develop ]
-    paths:
-      - 'android/**'
-      - 'src/**'
-      - 'libs/**'
-      - 'CMakeLists.txt'
-      - '.github/workflows/**'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -22,9 +16,79 @@ env:
 
 jobs:
   # ============================================================
-  # Build Everything
+  # STEP 1: Clone and prepare all dependencies
+  # ============================================================
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Cache dependencies
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            libs/randomx/
+            libs/nlohmann/
+          key: deps-v2-${{ env.RANDOMX_VERSION }}-${{ hashFiles('CMakeLists.txt') }}
+      
+      - name: Clone RandomX
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          echo "📦 Cloning RandomX..."
+          mkdir -p libs
+          git clone --depth 1 --branch ${{ env.RANDOMX_VERSION }} \
+            https://github.com/tevador/RandomX.git libs/randomx
+          
+          if [ ! -f "libs/randomx/src/randomx.h" ]; then
+            echo "❌ RandomX clone failed"
+            exit 1
+          fi
+          echo "✅ RandomX cloned"
+      
+      - name: Download JSON library
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          echo "📦 Downloading JSON library..."
+          mkdir -p libs/nlohmann
+          
+          wget -q -O libs/nlohmann/json.hpp \
+            https://github.com/nlohmann/json/releases/latest/download/json.hpp || \
+          curl -fsSL -o libs/nlohmann/json.hpp \
+            https://github.com/nlohmann/json/releases/latest/download/json.hpp
+          
+          if [ ! -f "libs/nlohmann/json.hpp" ]; then
+            echo "❌ JSON download failed"
+            exit 1
+          fi
+          echo "✅ JSON downloaded"
+      
+      - name: Verify dependencies
+        run: |
+          echo "========================================="
+          echo "Dependencies check:"
+          echo "========================================="
+          
+          test -f "libs/randomx/src/randomx.h" && echo "✅ RandomX" || { echo "❌ RandomX missing"; exit 1; }
+          test -f "libs/nlohmann/json.hpp" && echo "✅ JSON" || { echo "❌ JSON missing"; exit 1; }
+          echo ""
+          echo "Dependencies ready!"
+      
+      - name: Upload dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps
+          path: |
+            libs/randomx/
+            libs/nlohmann/
+          retention-days: 1
+
+  # ============================================================
+  # STEP 2: Build APK for each architecture
   # ============================================================
   build:
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -32,447 +96,211 @@ jobs:
         abi: [arm64-v8a, armeabi-v7a]
     
     steps:
-      - name: Checkout Repository
+      # --- Setup ---
+      - name: Checkout repository
         uses: actions/checkout@v4
       
-      # ============================================================
-      # Clone RandomX
-      # ============================================================
-      - name: Cache RandomX
-        id: cache-randomx
-        uses: actions/cache@v4
+      - name: Download dependencies
+        uses: actions/download-artifact@v4
         with:
-          path: libs/randomx
-          key: randomx-${{ env.RANDOMX_VERSION }}-${{ hashFiles('CMakeLists.txt') }}
+          name: deps
+          path: libs/
       
-      - name: Clone RandomX
-        if: steps.cache-randomx.outputs.cache-hit != 'true'
-        run: |
-          echo "📦 Cloning RandomX ${{ env.RANDOMX_VERSION }}..."
-          mkdir -p libs
-          git clone --branch ${{ env.RANDOMX_VERSION }} --depth 1 \
-            https://github.com/tevador/RandomX.git libs/randomx
-          echo "✅ RandomX cloned"
-      
-      # ============================================================
-      # Download JSON Library
-      # ============================================================
-      - name: Cache JSON Library
-        id: cache-json
-        uses: actions/cache@v4
-        with:
-          path: libs/nlohmann
-          key: nlohmann-json-${{ hashFiles('CMakeLists.txt') }}
-      
-      - name: Download nlohmann/json
-        if: steps.cache-json.outputs.cache-hit != 'true'
-        run: |
-          echo "📦 Downloading nlohmann/json..."
-          mkdir -p libs/nlohmann
-          wget -q -O libs/nlohmann/json.hpp \
-            https://github.com/nlohmann/json/releases/latest/download/json.hpp 2>/dev/null || \
-          curl -sL -o libs/nlohmann/json.hpp \
-            https://github.com/nlohmann/json/releases/latest/download/json.hpp
-          echo "✅ JSON downloaded"
-      
-      # ============================================================
-      # Verify Dependencies
-      # ============================================================
-      - name: Verify Dependencies
-        run: |
-          echo "========================================="
-          echo "Checking dependencies..."
-          echo "========================================="
-          
-          if [ -f "libs/randomx/src/randomx.h" ]; then
-            echo "✅ RandomX found"
-          else
-            echo "❌ RandomX missing at libs/randomx/src/randomx.h"
-            find . -name "randomx.h" 2>/dev/null || echo "No randomx.h anywhere"
-            exit 1
-          fi
-          
-          if [ -f "libs/nlohmann/json.hpp" ]; then
-            echo "✅ JSON library found"
-          else
-            echo "❌ JSON missing at libs/nlohmann/json.hpp"
-            exit 1
-          fi
-      
-      # ============================================================
-      # Setup Java
-      # ============================================================
-      - name: Setup JDK 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
       
-      # ============================================================
-      # Setup Android SDK
-      # ============================================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
       
-      - name: Install NDK and CMake
+      - name: Install NDK
         run: |
-          echo "Installing NDK ${{ env.ANDROID_NDK_VERSION }}..."
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
             "ndk;${{ env.ANDROID_NDK_VERSION }}" \
-            "cmake;3.22.1" 2>/dev/null || true
+            "cmake;3.22.1" 2>/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
       
-      # ============================================================
-      # Setup Gradle Wrapper (Auto-download if missing)
-      # ============================================================
-      - name: Setup Gradle Wrapper
+      # --- Fix Permissions ---
+      - name: Fix gradlew permissions
+        run: |
+          echo "Fixing gradlew permissions..."
+          chmod +x android/gradlew
+          ls -la android/gradlew
+          if [ ! -x "android/gradlew" ]; then
+            echo "❌ Cannot make gradlew executable"
+            exit 1
+          fi
+          echo "✅ gradlew is executable"
+      
+      # --- Setup Gradle Wrapper ---
+      - name: Setup Gradle wrapper
         working-directory: android
         run: |
-          echo "========================================="
-          echo "Setting up Gradle ${{ env.GRADLE_VERSION }}..."
-          echo "========================================="
-          
+          echo "Setting up Gradle wrapper..."
           mkdir -p gradle/wrapper
           
-          # Download gradle-wrapper.jar if missing
+          # Download wrapper JAR if missing
           if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
             echo "Downloading gradle-wrapper.jar..."
             wget -q -O gradle/wrapper/gradle-wrapper.jar \
-              "https://raw.githubusercontent.com/gradle/gradle/v${{ env.GRADLE_VERSION }}.0/gradle/wrapper/gradle-wrapper.jar" 2>/dev/null || \
-            curl -sL -o gradle/wrapper/gradle-wrapper.jar \
-              "https://raw.githubusercontent.com/gradle/gradle/v${{ env.GRADLE_VERSION }}.0/gradle/wrapper/gradle-wrapper.jar"
+              "https://raw.githubusercontent.com/gradle/gradle/v${{ env.GRADLE_VERSION }}.0/gradle/wrapper/gradle-wrapper.jar" 2>/dev/null
             
-            if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-              echo "✅ gradle-wrapper.jar downloaded ($(stat -c%s gradle/wrapper/gradle-wrapper.jar) bytes)"
-            else
+            if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
               echo "❌ Failed to download gradle-wrapper.jar"
               exit 1
             fi
-          else
-            echo "✅ gradle-wrapper.jar exists"
           fi
           
-          # Create gradle-wrapper.properties
+          # Create properties file
           cat > gradle/wrapper/gradle-wrapper.properties << PROPS
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\\://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip
-          networkTimeout=10000
-          validateDistributionUrl=true
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-           PROPS
-          echo "✅ gradle-wrapper.properties created"
+           
+          # Final permission fix
+          chmod +x gradlew
           
-          # Ensure gradlew exists and is executable
-          if [ ! -f "gradlew" ]; then
-            echo "Creating gradlew script..."
-            cat > gradlew << 'GRADLEW'
-#!/bin/sh
-##############################################################################
-## Gradle start up script
-##############################################################################
- 
-      # ============================================================
-      # Cache Gradle Downloads
-      # ============================================================
+          echo "Gradle wrapper ready:"
+          ls -la gradlew gradle/wrapper/
+      
+      # --- Verify Structure ---
+      - name: Verify project structure
+        run: |
+          echo "========================================="
+          echo "Verifying project structure..."
+          echo "========================================="
+          
+          # Check all required files exist
+          FILES=(
+            "libs/randomx/src/randomx.h"
+            "libs/nlohmann/json.hpp"
+            "android/build.gradle"
+            "android/settings.gradle"
+            "android/app/build.gradle"
+            "android/app/src/main/AndroidManifest.xml"
+            "android/app/src/main/cpp/CMakeLists.txt"
+          )
+          
+          ALL_OK=true
+          for file in "${FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "  ✅ $file"
+            else
+              echo "  ❌ MISSING: $file"
+              ALL_OK=false
+            fi
+          done
+          
+          if [ "$ALL_OK" = false ]; then
+            echo ""
+            echo "❌ Some required files are missing!"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ All required files present"
+      
+      # --- Cache Gradle ---
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ env.GRADLE_VERSION }}-${{ hashFiles('android/**/*.gradle*') }}
+          key: gradle-${{ runner.os }}-${{ env.GRADLE_VERSION }}-${{ matrix.abi }}-${{ hashFiles('android/**/*.gradle*') }}
       
-      # ============================================================
-      # Build APK
-      # ============================================================
+      # --- Build ---
       - name: Build APK for ${{ matrix.abi }}
-        id: build
         working-directory: android
         run: |
           echo "========================================="
-          echo "Building APK..."
-          echo "  ABI: ${{ matrix.abi }}"
-          echo "  NDK: ${{ env.ANDROID_NDK_VERSION }}"
-          echo "  Gradle: ${{ env.GRADLE_VERSION }}"
+          echo "BUILD START"
           echo "========================================="
+          echo "Architecture: ${{ matrix.abi }}"
+          echo "Time: $(date)"
+          echo ""
           
-          # Create log directory
-          LOG_DIR="../build-logs"
-          mkdir -p "$LOG_DIR"
-          LOG_FILE="$LOG_DIR/build-${{ matrix.abi }}.log"
-          
-          # Build with full logging
+          # Run Gradle build
           ./gradlew assembleDebug \
             --no-daemon \
             --stacktrace \
             --warning-mode all \
-            2>&1 | tee "$LOG_FILE"
+            2>&1 | tee build-${{ matrix.abi }}.log
           
-          BUILD_RESULT=${PIPESTATUS[0]}
+          RESULT=${PIPESTATUS[0]}
           
-          # Log build result
-          echo "" >> "$LOG_FILE"
-          echo "========================================" >> "$LOG_FILE"
-          echo "BUILD RESULT: $BUILD_RESULT" >> "$LOG_FILE"
-          echo "TIMESTAMP: $(date)" >> "$LOG_FILE"
-          echo "ABI: ${{ matrix.abi }}" >> "$LOG_FILE"
-          echo "========================================" >> "$LOG_FILE"
-          
-          if [ $BUILD_RESULT -ne 0 ]; then
-            echo "❌ Build failed with exit code $BUILD_RESULT"
-            exit $BUILD_RESULT
-          fi
-          
-          echo "✅ Build successful"
-      
-      # ============================================================
-      # Collect Build Info (always runs)
-      # ============================================================
-      - name: Collect Build Information
-        if: always()
-        run: |
-          INFO_DIR="build-info/${{ matrix.abi }}"
-          mkdir -p "$INFO_DIR"
-          
-          # System info
-          echo "ABI: ${{ matrix.abi }}" > "$INFO_DIR/system.txt"
-          echo "NDK: ${{ env.ANDROID_NDK_VERSION }}" >> "$INFO_DIR/system.txt"
-          echo "Gradle: ${{ env.GRADLE_VERSION }}" >> "$INFO_DIR/system.txt"
-          echo "Java: $(java -version 2>&1 | head -1)" >> "$INFO_DIR/system.txt"
-          echo "Date: $(date)" >> "$INFO_DIR/system.txt"
-          
-          # Dependency info
-          echo "RandomX: ${{ env.RANDOMX_VERSION }}" > "$INFO_DIR/dependencies.txt"
-          echo "RandomX path: $(find . -name randomx.h 2>/dev/null | head -1)" >> "$INFO_DIR/dependencies.txt"
-          echo "JSON path: $(find . -name json.hpp 2>/dev/null | head -1)" >> "$INFO_DIR/dependencies.txt"
-          
-          # Build output info
-          if [ -d "android/app/build/outputs" ]; then
-            find android/app/build/outputs -type f -name "*.apk" -o -name "*.so" > "$INFO_DIR/build_output.txt" 2>/dev/null
-          fi
-      
-      # ============================================================
-      # Verify APK
-      # ============================================================
-      - name: Verify APK
-        run: |
+          echo ""
           echo "========================================="
-          echo "Verifying APK..."
-          echo "========================================="
-          
-          APK_DIR="android/app/build/outputs/apk/debug"
-          APK_FILE=$(find "$APK_DIR" -name "*.apk" -type f 2>/dev/null | head -1)
-          
-          if [ -n "$APK_FILE" ]; then
-            echo "✅ APK: $APK_FILE"
-            echo "   Size: $(du -sh "$APK_FILE" | cut -f1)"
-            
-            # Check for native libs
-            echo ""
-            echo "Native libraries:"
-            unzip -l "$APK_FILE" 2>/dev/null | grep "\.so" | awk '{print "   " $4 " (" $1 " bytes)"}'
+          if [ $RESULT -eq 0 ]; then
+            echo "✅ BUILD SUCCESSFUL"
           else
-            echo "❌ No APK found!"
-            find android/app/build -name "*.apk" 2>/dev/null || echo "No APK files anywhere"
+            echo "❌ BUILD FAILED (exit code: $RESULT)"
+            echo ""
+            echo "Last 40 lines of build log:"
+            tail -40 build-${{ matrix.abi }}.log
           fi
+          echo "========================================="
+          
+          exit $RESULT
       
-      # ============================================================
-      # Upload APK (on success)
-      # ============================================================
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk-${{ matrix.abi }}
-          path: android/app/build/outputs/apk/debug/*.apk
-          retention-days: 14
-      
-      # ============================================================
-      # Upload Build Log (always)
-      # ============================================================
-      - name: Upload Build Log
+      # --- Upload build log ---
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ matrix.abi }}
-          path: build-logs/build-${{ matrix.abi }}.log
+          path: android/build-${{ matrix.abi }}.log
           retention-days: 7
       
-      # ============================================================
-      # Upload Build Info (always)
-      # ============================================================
-      - name: Upload Build Info
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-info-${{ matrix.abi }}
-          path: build-info/${{ matrix.abi }}/
-          retention-days: 7
-
-  # ============================================================
-  # Combine All Logs (runs after all builds complete)
-  # ============================================================
-  combine-logs:
-    needs: build
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: Download ARM64 Log
-        uses: actions/download-artifact@v4
-        with:
-          name: build-log-arm64-v8a
-          path: logs/
-        continue-on-error: true
-      
-      - name: Download ARMv7 Log
-        uses: actions/download-artifact@v4
-        with:
-          name: build-log-armeabi-v7a
-          path: logs/
-        continue-on-error: true
-      
-      - name: Download ARM64 Info
-        uses: actions/download-artifact@v4
-        with:
-          name: build-info-arm64-v8a
-          path: logs/info-arm64/
-        continue-on-error: true
-      
-      - name: Download ARMv7 Info
-        uses: actions/download-artifact@v4
-        with:
-          name: build-info-armeabi-v7a
-          path: logs/info-armv7/
-        continue-on-error: true
-      
-      - name: Combine All Logs into Single File
+      # --- Upload APK ---
+      - name: Find APK
+        if: success()
         run: |
-          echo "========================================="
-          echo "Combining all build logs..."
-          echo "========================================="
+          echo "Looking for APK..."
+          find android/app/build/outputs/apk -name "*.apk" -type f 2>/dev/null
           
-          COMBINED="combined-build-log.txt"
+          APK=$(find android/app/build/outputs/apk -name "*.apk" -type f 2>/dev/null | head -1)
           
-          {
-            echo "==========================================================="
-            echo "MONERO RANDOMX MINER - COMBINED BUILD LOG"
-            echo "==========================================================="
-            echo ""
-            echo "Repository: ${{ github.repository }}"
-            echo "Branch: ${{ github.ref_name }}"
-            echo "Commit: ${{ github.sha }}"
-            echo "Workflow: ${{ github.workflow }}"
-            echo "Run ID: ${{ github.run_id }}"
-            echo "Date: $(date)"
-            echo ""
-            echo "==========================================================="
-            echo ""
-            
-            # Add each log
-            for logfile in logs/build-*.log; do
-              if [ -f "$logfile" ]; then
-                ABI=$(echo "$logfile" | sed 's/.*build-//' | sed 's/\.log//')
-                echo "==========================================================="
-                echo "BUILD LOG: $ABI"
-                echo "==========================================================="
-                cat "$logfile"
-                echo ""
-                echo ""
-              fi
-            done
-            
-            # Add info files
-            for infofile in logs/info-*/system.txt; do
-              if [ -f "$infofile" ]; then
-                echo "==========================================================="
-                echo "BUILD INFO: $(dirname "$infofile" | xargs basename)"
-                echo "==========================================================="
-                cat "$infofile"
-                echo ""
-              fi
-            done
-            
-            # Summary
-            echo "==========================================================="
-            echo "BUILD SUMMARY"
-            echo "==========================================================="
-            
-            # Count errors
-            TOTAL_ERRORS=$(grep -ci "error\|failed\|failure" logs/build-*.log 2>/dev/null || echo "0")
-            echo "Total errors/warnings found: $TOTAL_ERRORS"
-            
-            # Check for APK existence
-            if ls logs/../apk-* 2>/dev/null; then
-              echo "APK Build: SUCCESS"
-            else
-              echo "APK Build: FAILED (check logs above)"
-            fi
-            
-            echo ""
-            echo "==========================================================="
-            echo "END OF COMBINED LOG"
-            echo "==========================================================="
-            
-          } > "$COMBINED"
-          
-          echo "✅ Combined log created: $COMBINED"
-          echo "   Size: $(wc -c < $COMBINED) bytes"
-          echo "   Lines: $(wc -l < $COMBINED)"
-      
-      - name: Upload Combined Log
-        uses: actions/upload-artifact@v4
-        with:
-          name: combined-build-log
-          path: combined-build-log.txt
-          retention-days: 30
-      
-      - name: Print Log Summary
-        run: |
-          echo ""
-          echo "========================================="
-          echo "BUILD LOG SUMMARY"
-          echo "========================================="
-          
-          if [ -f "combined-build-log.txt" ]; then
-            echo ""
-            echo "🔴 Errors found:"
-            grep -i "error\|failed\|failure" combined-build-log.txt | head -20 || echo "  None found"
-            
-            echo ""
-            echo "⚠️ Warnings found:"
-            grep -i "warning" combined-build-log.txt | head -10 || echo "  None found"
-            
-            echo ""
-            echo "📦 APK Status:"
-            grep -A2 "APK Build:" combined-build-log.txt || echo "  Unknown"
+          if [ -z "$APK" ]; then
+            echo "❌ No APK found!"
+            find android/app/build -type f 2>/dev/null | head -20
+            exit 1
           fi
+          
+          echo "✅ APK found: $APK"
+          echo "Size: $(du -sh "$APK" | cut -f1)"
+          echo "APK_PATH=$APK" >> $GITHUB_ENV
+      
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monero-miner-${{ matrix.abi }}
+          path: ${{ env.APK_PATH }}
+          retention-days: 30
 
   # ============================================================
-  # Release (manual trigger via tag)
+  # STEP 3: Release (only on tags)
   # ============================================================
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, combine-logs]
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download ARM64 APK
+      - name: Download all APKs
         uses: actions/download-artifact@v4
-        with:
-          name: apk-arm64-v8a
       
-      - name: Download ARMv7 APK
-        uses: actions/download-artifact@v4
-        with:
-          name: apk-armeabi-v7a
+      - name: List APKs
+        run: |
+          echo "APKs for release:"
+          find . -name "*.apk" -type f -exec ls -la {} \;
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            *.apk
+            monero-miner-arm64-v8a/*.apk
+            monero-miner-armeabi-v7a/*.apk
           generate_release_notes: true
-          draft: true
+          draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
