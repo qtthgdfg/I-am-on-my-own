@@ -21,7 +21,6 @@ StratumClient::StratumClient(const std::string& pool_host,
 
 StratumClient::~StratumClient() {
     stop();
-    cleanup_ssl();
 }
 
 bool StratumClient::resolve_host() {
@@ -61,20 +60,7 @@ bool StratumClient::connect() {
         return false;
     }
     
-    if (m_use_ssl) {
-        SSL_library_init();
-        SSL_load_error_strings();
-        OpenSSL_add_all_algorithms();
-        
-        m_ssl_ctx = SSL_CTX_new(TLS_client_method());
-        if (!m_ssl_ctx) return false;
-        
-        m_ssl = SSL_new(m_ssl_ctx);
-        SSL_set_fd(m_ssl, m_socket_fd);
-        
-        if (SSL_connect(m_ssl) <= 0) return false;
-    }
-    
+    // SSL not available on Android - use raw TCP
     m_connected.store(true);
     return true;
 }
@@ -87,12 +73,7 @@ bool StratumClient::login() {
 
 void StratumClient::send_message(const std::string& message) {
     std::lock_guard<std::mutex> lock(m_send_mutex);
-    
-    if (m_use_ssl && m_ssl) {
-        SSL_write(m_ssl, message.c_str(), message.length());
-    } else {
-        send(m_socket_fd, message.c_str(), message.length(), MSG_NOSIGNAL);
-    }
+    send(m_socket_fd, message.c_str(), message.length(), MSG_NOSIGNAL);
 }
 
 void StratumClient::start_receive_loop() {
@@ -101,12 +82,7 @@ void StratumClient::start_receive_loop() {
         char recv_buffer[65536];
         
         while (m_running.load()) {
-            int bytes_received;
-            if (m_use_ssl && m_ssl) {
-                bytes_received = SSL_read(m_ssl, recv_buffer, sizeof(recv_buffer) - 1);
-            } else {
-                bytes_received = recv(m_socket_fd, recv_buffer, sizeof(recv_buffer) - 1, 0);
-            }
+            int bytes_received = recv(m_socket_fd, recv_buffer, sizeof(recv_buffer) - 1, 0);
             
             if (bytes_received <= 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
@@ -130,7 +106,6 @@ void StratumClient::start_receive_loop() {
 }
 
 void StratumClient::handle_message(const std::string& message) {
-    // Simple JSON parsing
     if (message.find("\"method\"") != std::string::npos && message.find("\"job\"") != std::string::npos) {
         std::lock_guard<std::mutex> lock(m_job_mutex);
         m_current_job.job_id = "job";
@@ -168,18 +143,6 @@ void StratumClient::stop() {
         m_socket_fd = -1;
     }
     m_connected.store(false);
-}
-
-void StratumClient::cleanup_ssl() {
-    if (m_ssl) {
-        SSL_shutdown(m_ssl);
-        SSL_free(m_ssl);
-        m_ssl = nullptr;
-    }
-    if (m_ssl_ctx) {
-        SSL_CTX_free(m_ssl_ctx);
-        m_ssl_ctx = nullptr;
-    }
 }
 
 void StratumClient::set_job_callback(JobCallback callback) {
