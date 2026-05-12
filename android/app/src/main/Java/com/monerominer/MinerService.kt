@@ -1,3 +1,5 @@
+// FILE: MoneroRandomXMiner/android/app/src/main/java/com/monerominer/MinerService.kt
+
 package com.monerominer
 
 import android.app.*
@@ -16,6 +18,13 @@ class MinerService : LifecycleService() {
     private val binder = LocalBinder()
     private var wakeLock: PowerManager.WakeLock? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var currentConfig: MinerConfig? = null
+    
+    // Connection tracking
+    private var currentPort: Int = 3333
+    private var currentSSL: Boolean = false
+    private var connectionAttempts: Int = 0
+    private val maxConnectionAttempts: Int = 10  // Try all ports before giving up
 
     inner class LocalBinder : android.os.Binder() {
         fun getService(): MinerService = this@MinerService
@@ -31,39 +40,134 @@ class MinerService : LifecycleService() {
         
         when (intent?.action) {
             ACTION_START -> {
-                val config = intent.getSerializableExtra(EXTRA_CONFIG) as MinerConfig
-                startMining(config)
+                val config = intent.getSerializableExtra(EXTRA_CONFIG) as? MinerConfig
+                if (config != null) {
+                    startMiningWithFallback(config)
+                }
             }
             ACTION_STOP -> stopMining()
             ACTION_PAUSE -> pauseMining()
-            ACTION_RESUME -> resumeMining()
+            ACTION_RESUME -> {
+                currentConfig?.let { startMiningWithFallback(it) }
+            }
         }
         
         return START_STICKY
     }
 
-    fun startMining(config: MinerConfig) {
+    /**
+     * Start mining with smart port fallback
+     * Tries all available ports before giving up
+     */
+    private fun startMiningWithFallback(config: MinerConfig) {
         if (minerRunning) return
+        
+        currentConfig = config
+        connectionAttempts = 0
         
         acquireWakeLock()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification(config))
+        startForeground(NOTIFICATION_ID, createNotification(config, "Connecting..."))
         
         scope.launch {
             try {
-                val success = nativeStartMining(config, MinerCallback())
-                minerRunning = success
+                val portsToTry = config.getAllPortsToTry()
+                var connected = false
                 
-                if (success) {
-                    broadcastStatus(STATUS_MINING)
-                    startStatsUpdate()
+                broadcastStatus(STATUS_CONNECTING, "Starting connection attempts...")
+                
+                for (port in portsToTry) {
+                    if (connectionAttempts >= maxConnectionAttempts) {
+                        broadcastStatus(STATUS_ERROR, "Exhausted all connection attempts")
+                        break
+                    }
+                    
+                    val useSSL = config.isSSLPort(port)
+                    currentPort = port
+                    currentSSL = useSSL
+                    connectionAttempts++
+                    
+                    val url = config.getStratumUrl(port, useSSL)
+                    val sslLabel = if (useSSL) "🔒 SSL" else "🔓 Non-SSL"
+                    
+                    broadcastStatus(STATUS_CONNECTING, 
+                        "Trying $sslLabel port $port (attempt $connectionAttempts)...")
+                    
+                    updateNotification(config, "Trying $sslLabel port $port...")
+                    
+                    if (tryConnection(config, port, useSSL)) {
+                        connected = true
+                        broadcastStatus(STATUS_CONNECTED, 
+                            "✅ Connected via $sslLabel port $port")
+                        break
+                    } else {
+                        broadcastStatus(STATUS_RETRY, 
+                            "❌ $sslLabel port $port failed, trying next...")
+                        
+                        // Small delay between attempts
+                        delay(2000)
+                    }
+                }
+                
+                if (connected) {
+                    // Start the actual mining
+                    val miningStarted = nativeStartMining(config, MinerCallback())
+                    
+                    if (miningStarted) {
+                        minerRunning = true
+                        updateNotification(config, "Mining active on port $currentPort")
+                        broadcastStatus(STATUS_MINING, "Mining started on port $currentPort")
+                        startStatsUpdate()
+                    } else {
+                        broadcastStatus(STATUS_ERROR, "Mining initialization failed")
+                        stopMining()
+                    }
                 } else {
-                    broadcastStatus(STATUS_ERROR, "Failed to start miner")
-                    stopSelf()
+                    broadcastStatus(STATUS_ERROR, 
+                        "⚠️ Could not connect to ${config.poolHost} after trying ${connectionAttempts} ports")
+                    
+                    // Try non-SSL as absolute last resort if SSL was enabled
+                    if (config.useSSL && config.poolPort !in config.allPortsToTry) {
+                        broadcastStatus(STATUS_CONNECTING, "Last resort: trying original port ${config.poolPort} (non-SSL)...")
+                        
+                        if (tryConnection(config, config.poolPort, false)) {
+                            connected = true
+                            minerRunning = true
+                            currentPort = config.poolPort
+                            currentSSL = false
+                            updateNotification(config, "Connected non-SSL on port ${config.poolPort}")
+                            broadcastStatus(STATUS_MINING, "⚠️ Connected non-SSL (last resort)")
+                            startStatsUpdate()
+                        } else {
+                            stopMining()
+                        }
+                    } else {
+                        stopMining()
+                    }
                 }
             } catch (e: Exception) {
-                broadcastStatus(STATUS_ERROR, e.message ?: "Unknown error")
+                broadcastStatus(STATUS_ERROR, "Connection error: ${e.message}")
                 stopMining()
+            }
+        }
+    }
+
+    /**
+     * Try connecting to a specific port
+     */
+    private suspend fun tryConnection(config: MinerConfig, port: Int, useSSL: Boolean): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                nativeConnectSSL(
+                    config.poolHost,
+                    port,
+                    config.wallet,
+                    config.password,
+                    config.worker,
+                    useSSL
+                )
+            } catch (e: Exception) {
+                false
             }
         }
     }
@@ -71,28 +175,24 @@ class MinerService : LifecycleService() {
     fun stopMining() {
         nativeStopMining()
         minerRunning = false
+        connectionAttempts = 0
         releaseWakeLock()
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+        broadcastStatus(STATUS_STOPPED, "Miner stopped")
     }
 
     fun pauseMining() {
         nativeStopMining()
         minerRunning = false
-        broadcastStatus(STATUS_PAUSED)
-    }
-
-    fun resumeMining() {
-        val config = ConfigManager.getConfig(this)
-        if (config != null) {
-            startMining(config)
-        }
+        broadcastStatus(STATUS_PAUSED, "Miner paused")
     }
 
     fun isMining(): Boolean = minerRunning
-
     fun getStats(): String = nativeGetStats()
+    fun getCurrentPort(): Int = currentPort
+    fun isCurrentSSL(): Boolean = currentSSL
 
     private fun acquireWakeLock() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -100,7 +200,7 @@ class MinerService : LifecycleService() {
             PowerManager.PARTIAL_WAKE_LOCK,
             "MoneroMiner::WakeLock"
         )
-        wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes timeout
+        wakeLock?.acquire(10 * 60 * 1000L)
     }
 
     private fun releaseWakeLock() {
@@ -115,16 +215,24 @@ class MinerService : LifecycleService() {
                 "Mining Status",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Shows mining status and hashrate"
+                description = "Shows mining connection status"
                 setShowBadge(false)
             }
-            
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
-    private fun createNotification(config: MinerConfig): Notification {
+    private fun createNotification(config: MinerConfig, status: String): Notification {
+        return buildNotification(config, status)
+    }
+
+    private fun updateNotification(config: MinerConfig, status: String) {
+        val notification = buildNotification(config, status)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun buildNotification(config: MinerConfig, status: String): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
@@ -139,11 +247,14 @@ class MinerService : LifecycleService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
+        val sslInfo = if (currentSSL) "🔒 SSL" else "🔓 Non-SSL"
+        val portInfo = if (currentPort > 0) ":$currentPort" else ""
+        
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Monero Mining Active")
-            .setContentText("Mining with ${config.threads} threads")
+            .setContentTitle("Monero Miner")
+            .setContentText("$status | $sslInfo$portInfo | ${config.threads} threads")
             .setSmallIcon(R.drawable.ic_mining)
-            .setOngoing(true)
+            .setOngoing(minerRunning)
             .setContentIntent(pendingIntent)
             .addAction(R.drawable.ic_stop, "Stop", stopPendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -153,8 +264,8 @@ class MinerService : LifecycleService() {
     private fun startStatsUpdate() {
         scope.launch {
             while (isActive && minerRunning) {
-                delay(5000) // Update every 5 seconds
-                val stats = getStats()
+                delay(5000)
+                val stats = nativeGetStats()
                 broadcastStatus(STATUS_STATS, stats)
             }
         }
@@ -164,6 +275,8 @@ class MinerService : LifecycleService() {
         val intent = Intent(ACTION_STATUS_UPDATE).apply {
             putExtra(EXTRA_STATUS, status)
             putExtra(EXTRA_DATA, data)
+            putExtra(EXTRA_PORT, currentPort)
+            putExtra(EXTRA_SSL, currentSSL)
         }
         sendBroadcast(intent)
     }
@@ -174,9 +287,13 @@ class MinerService : LifecycleService() {
     }
 
     // Native methods
+    private external fun nativeConnectSSL(
+        host: String, port: Int, wallet: String,
+        password: String, worker: String, useSSL: Boolean
+    ): Boolean
+    
     private external fun nativeStartMining(
-        config: MinerConfig,
-        callback: MinerCallback
+        config: MinerConfig, callback: MinerCallback
     ): Boolean
 
     private external fun nativeStopMining()
@@ -185,10 +302,13 @@ class MinerService : LifecycleService() {
     inner class MinerCallback {
         fun onShareFound(jobId: String, nonce: String, hash: String) {
             scope.launch {
-                broadcastStatus(
-                    STATUS_SHARE_FOUND,
-                    "Job: $jobId, Nonce: $nonce, Hash: $hash"
-                )
+                broadcastStatus(STATUS_SHARE_FOUND, "Job: $jobId, Nonce: $nonce")
+            }
+        }
+        
+        fun onConnectionError(error: String, port: Int) {
+            scope.launch {
+                broadcastStatus(STATUS_RETRY, "Connection error on port $port: $error")
             }
         }
     }
@@ -206,6 +326,8 @@ class MinerService : LifecycleService() {
         const val EXTRA_CONFIG = "config"
         const val EXTRA_STATUS = "status"
         const val EXTRA_DATA = "data"
+        const val EXTRA_PORT = "port"
+        const val EXTRA_SSL = "ssl"
         
         const val STATUS_MINING = "mining"
         const val STATUS_PAUSED = "paused"
@@ -213,5 +335,9 @@ class MinerService : LifecycleService() {
         const val STATUS_ERROR = "error"
         const val STATUS_SHARE_FOUND = "share_found"
         const val STATUS_STATS = "stats"
+        const val STATUS_CONNECTING = "connecting"
+        const val STATUS_CONNECTED = "connected"
+        const val STATUS_RETRY = "retry"
+        const val STATUS_WARNING = "warning"
     }
 }
