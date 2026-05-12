@@ -1,11 +1,10 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <atomic>
-#include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <functional>
-#include <cstdint>
+#include <thread>
 #include "stratum_client.h"
 
 namespace monero {
@@ -16,30 +15,13 @@ struct ShareResult {
     std::string nonce;
     std::string hash;
     std::string error_message;
-    std::chrono::steady_clock::time_point submit_time;
-    uint64_t share_difficulty{0};
 };
 
 struct MiningStats {
-    std::atomic<uint64_t> total_hashes{0};
-    std::atomic<uint64_t> accepted_shares{0};
-    std::atomic<uint64_t> rejected_shares{0};
-    std::atomic<uint64_t> stale_shares{0};
-    std::atomic<double> current_hashrate{0.0};
-    std::atomic<double> average_hashrate{0.0};
-    std::chrono::steady_clock::time_point start_time;
-    std::chrono::steady_clock::time_point last_share_time;
-    
-    void reset() {
-        total_hashes.store(0);
-        accepted_shares.store(0);
-        rejected_shares.store(0);
-        stale_shares.store(0);
-        current_hashrate.store(0.0);
-        average_hashrate.store(0.0);
-        start_time = std::chrono::steady_clock::now();
-        last_share_time = start_time;
-    }
+    uint64_t total_hashes{0};
+    uint64_t accepted_shares{0};
+    uint64_t rejected_shares{0};
+    void reset() { total_hashes = 0; accepted_shares = 0; rejected_shares = 0; }
 };
 
 class TargetHelper {
@@ -69,7 +51,6 @@ class JobManager {
 public:
     using JobCallback = std::function<void(const MiningJob&)>;
     using ShareCallback = std::function<void(const ShareResult&)>;
-    
     JobManager();
     ~JobManager();
     void set_job_callback(JobCallback callback);
@@ -77,13 +58,10 @@ public:
     void new_job(const MiningJob& job);
     MiningJob get_current_job() const;
     bool has_job() const;
-    bool is_job_stale(const std::string& job_id) const;
     void record_share(const ShareResult& result);
     MiningStats get_stats() const;
     void reset_stats();
     void set_job_history_size(size_t size);
-    bool was_job_processed(const std::string& job_id) const;
-    
 private:
     mutable std::mutex m_mutex;
     MiningJob m_current_job;
@@ -122,7 +100,7 @@ public:
     void set_fixed_difficulty(double difficulty);
     void enable_auto_difficulty(bool enable);
 private:
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     double m_current_difficulty;
     uint64_t m_current_target;
     bool m_auto_difficulty{true};
