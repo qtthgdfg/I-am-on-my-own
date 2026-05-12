@@ -1,3 +1,5 @@
+// FILE: MoneroRandomXMiner/android/app/build.gradle
+
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
@@ -14,8 +16,6 @@ android {
         versionCode 1
         versionName "1.0.0"
         
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a'
         }
@@ -24,17 +24,9 @@ android {
             cmake {
                 arguments "-DANDROID_STL=c++_shared",
                           "-DANDROID_TOOLCHAIN=clang",
-                          "-DANDROID_PLATFORM=android-26",
-                          "-DBUILD_WITH_SSL=OFF",
-                          "-DBUILD_WITH_HWLOC=OFF",
-                          "-DENABLE_HUGEPAGES=OFF",
-                          "-DRANDOMX_BUILD_SHARED=OFF"
+                          "-DANDROID_PLATFORM=android-26"
                 
-                cppFlags "-std=c++17",
-                         "-O3",
-                         "-fomit-frame-pointer",
-                         "-funroll-loops"
-                
+                cppFlags "-std=c++17", "-O3", "-fomit-frame-pointer"
                 targets "monerominer"
             }
         }
@@ -42,29 +34,11 @@ android {
     
     buildTypes {
         release {
-            minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
-            
-            ndk {
-                debugSymbolLevel 'none'
-            }
-            
-            externalNativeBuild {
-                cmake {
-                    arguments "-DCMAKE_BUILD_TYPE=Release"
-                }
-            }
+            minifyEnabled false
         }
-        
         debug {
             debuggable true
             jniDebuggable true
-            
-            externalNativeBuild {
-                cmake {
-                    arguments "-DCMAKE_BUILD_TYPE=Debug"
-                }
-            }
         }
     }
     
@@ -83,25 +57,10 @@ android {
             version rootProject.ext.cmake_version
         }
     }
-    
-    packagingOptions {
-        jniLibs {
-            useLegacyPackaging true
-        }
-        resources {
-            excludes += '/META-INF/{AL2.0,LGPL2.1}'
-        }
-    }
 }
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
-    implementation 'androidx.lifecycle:lifecycle-service:2.7.0'
-    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
-    
-    testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
 }
