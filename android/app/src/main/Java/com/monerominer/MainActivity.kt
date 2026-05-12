@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.method.ScrollingMovementMethod
+import android.view.View
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +26,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var logText: TextView
     private lateinit var startButton: MaterialButton
     private lateinit var stopButton: MaterialButton
+    private lateinit var settingsButton: MaterialButton
     
     private lateinit var poolHostInput: TextInputEditText
     private lateinit var poolPortInput: TextInputEditText
@@ -93,6 +95,7 @@ class MainActivity : ComponentActivity() {
         
         startButton = findViewById(R.id.start_button)
         stopButton = findViewById(R.id.stop_button)
+        settingsButton = findViewById(R.id.settings_button)
         
         poolHostInput = findViewById(R.id.pool_host_input)
         poolPortInput = findViewById(R.id.pool_port_input)
@@ -111,6 +114,18 @@ class MainActivity : ComponentActivity() {
         stopButton.setOnClickListener {
             stopMining()
         }
+        
+        // SETTINGS BUTTON
+        settingsButton.setOnClickListener {
+            val intent = Intent(this, SettingsActivity::class.java)
+            startActivity(intent)
+        }
+    }
+    
+    override fun onResume() {
+        super.onResume()
+        // Reload config when returning from settings
+        loadSavedConfig()
     }
 
     private fun validateInputs(): Boolean {
@@ -189,6 +204,7 @@ class MainActivity : ComponentActivity() {
     private fun enableControls(enabled: Boolean) {
         startButton.isEnabled = enabled
         stopButton.isEnabled = !enabled
+        settingsButton.isEnabled = enabled
         
         listOf(poolHostInput, poolPortInput, threadsInput, 
                walletInput, workerInput).forEach {
@@ -198,7 +214,6 @@ class MainActivity : ComponentActivity() {
 
     private fun parseStats(stats: String) {
         try {
-            // Simple JSON parsing without Gson
             if (stats.contains("\"hashrate\"")) {
                 val hashrate = stats.split("\"hashrate\":")[1]
                     .split(",")[0].trim().toDoubleOrNull() ?: 0.0
@@ -221,7 +236,6 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             logText.append("[$timestamp] $message\n")
             
-            // Auto-scroll to bottom
             val scrollView = logText.parent as? android.widget.ScrollView
             scrollView?.post {
                 scrollView.fullScroll(android.view.View.FOCUS_DOWN)
