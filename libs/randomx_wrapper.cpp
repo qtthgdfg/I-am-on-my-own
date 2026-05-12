@@ -15,6 +15,10 @@
 #define LOGE(...) 
 #endif
 
+// ============================================================
+// Constructor & Destructor
+// ============================================================
+
 RandomXWrapper::RandomXWrapper() 
     : m_cache(nullptr)
     , m_dataset(nullptr) {
@@ -25,6 +29,44 @@ RandomXWrapper::~RandomXWrapper() {
     destroy();
     LOGI("RandomXWrapper destroyed");
 }
+
+// ============================================================
+// Move Constructor
+// ============================================================
+RandomXWrapper::RandomXWrapper(RandomXWrapper&& other) noexcept
+    : m_cache(other.m_cache)
+    , m_dataset(other.m_dataset)
+    , m_vms(std::move(other.m_vms)) {
+    // Nullify source to prevent double-free
+    other.m_cache = nullptr;
+    other.m_dataset = nullptr;
+    LOGI("RandomXWrapper moved (constructor)");
+}
+
+// ============================================================
+// Move Assignment Operator
+// ============================================================
+RandomXWrapper& RandomXWrapper::operator=(RandomXWrapper&& other) noexcept {
+    if (this != &other) {
+        // Destroy current resources
+        destroy();
+        
+        // Transfer ownership
+        m_cache = other.m_cache;
+        m_dataset = other.m_dataset;
+        m_vms = std::move(other.m_vms);
+        
+        // Nullify source
+        other.m_cache = nullptr;
+        other.m_dataset = nullptr;
+    }
+    LOGI("RandomXWrapper moved (assignment)");
+    return *this;
+}
+
+// ============================================================
+// Initialize
+// ============================================================
 
 bool RandomXWrapper::initialize(const std::vector<uint8_t>& seed, 
                                uint32_t num_threads,
@@ -129,6 +171,10 @@ bool RandomXWrapper::initialize(const std::vector<uint8_t>& seed,
     return true;
 }
 
+// ============================================================
+// Hash Functions
+// ============================================================
+
 void RandomXWrapper::hash(uint32_t thread_id, 
                          const void* input, 
                          size_t input_size, 
@@ -165,6 +211,10 @@ void RandomXWrapper::hash_first(const void* input,
     hash(0, input, input_size, output);
 }
 
+// ============================================================
+// Utility Functions
+// ============================================================
+
 size_t RandomXWrapper::num_vms() const {
     return m_vms.size();
 }
@@ -174,6 +224,10 @@ bool RandomXWrapper::is_initialized() const {
            m_dataset != nullptr && 
            !m_vms.empty();
 }
+
+// ============================================================
+// Destroy
+// ============================================================
 
 void RandomXWrapper::destroy() {
     LOGI("Destroying RandomX resources...");
