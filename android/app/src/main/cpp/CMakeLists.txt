@@ -183,8 +183,6 @@ target_link_libraries(monerominer
     Threads::Threads
     android
     log
-    ssl
-    crypto
 )
 
 target_compile_definitions(monerominer PRIVATE ANDROID MOBILE_DEVICE HAVE_SSL)
