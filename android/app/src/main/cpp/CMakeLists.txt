@@ -5,25 +5,22 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(monerominer LANGUAGES CXX C)
 
-# ============================================================
-# Build Configuration
-# ============================================================
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ============================================================
-# PATH SETUP
-# CMake is at:   android/app/src/main/cpp/CMakeLists.txt
-# Go up 6 levels to reach project root
-#   ../ = src/main/cpp
-#   ../../ = src/main
-#   ../../../ = src
-#   ../../../../ = app
-#   ../../../../../ = android
-#   ../../../../../../ = PROJECT ROOT
+# PATH SETUP - FIXED!
+# CMake is at: android/app/src/main/cpp/CMakeLists.txt
+# Go up 5 levels to reach android/.. which is the project root
+#   ../ = cpp/
+#   ../../ = main/
+#   ../../../ = src/
+#   ../../../../ = app/
+#   ../../../../../ = android/
+# THEN we need the parent of android/ which is where src/ and libs/ live
 # ============================================================
-get_filename_component(MINER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ABSOLUTE)
+set(CMAKE_CURRENT_RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..")
+get_filename_component(MINER_ROOT "${CMAKE_CURRENT_RELATIVE}" ABSOLUTE)
 
 set(RANDOMX_DIR "${MINER_ROOT}/libs/randomx")
 set(NLOHMANN_DIR "${MINER_ROOT}/libs/nlohmann")
@@ -32,134 +29,99 @@ set(LIBS_DIR "${MINER_ROOT}/libs")
 
 message(STATUS "=========================================")
 message(STATUS "PATH DEBUG:")
-message(STATUS "  CMake file: ${CMAKE_CURRENT_SOURCE_DIR}")
-message(STATUS "  Project root: ${MINER_ROOT}")
-message(STATUS "  RandomX dir: ${RANDOMX_DIR}")
-message(STATUS "  Source dir: ${SRC_DIR}")
+message(STATUS "  CMake file:    ${CMAKE_CURRENT_SOURCE_DIR}")
+message(STATUS "  Relative path: ${CMAKE_CURRENT_RELATIVE}")
+message(STATUS "  Project root:  ${MINER_ROOT}")
+message(STATUS "  Source dir:    ${SRC_DIR}")
+message(STATUS "  Libs dir:      ${LIBS_DIR}")
+message(STATUS "  RandomX dir:   ${RANDOMX_DIR}")
 message(STATUS "=========================================")
 
 # ============================================================
-# Android Architecture Detection
+# Find sources with fallback search
 # ============================================================
-if(ANDROID)
-    message(STATUS "Building for Android ${ANDROID_ABI}")
-    
-    if(${ANDROID_ABI} STREQUAL "arm64-v8a")
-        set(ARM64 TRUE)
-        message(STATUS "  Target: ARM64 (64-bit)")
-    elseif(${ANDROID_ABI} STREQUAL "armeabi-v7a")
-        set(ARMV7 TRUE)
-        message(STATUS "  Target: ARMv7 (32-bit)")
-    elseif(${ANDROID_ABI} STREQUAL "x86_64")
-        set(X86_64 TRUE)
-        message(STATUS "  Target: x86_64")
-    elseif(${ANDROID_ABI} STREQUAL "x86")
-        set(X86 TRUE)
-        message(STATUS "  Target: x86")
+if(NOT EXISTS "${SRC_DIR}/stratum_client.cpp")
+    message(STATUS "Sources not at ${SRC_DIR}, searching...")
+    file(GLOB_RECURSE FOUND_STRATUM "${MINER_ROOT}/**/stratum_client.cpp")
+    if(FOUND_STRATUM)
+        list(GET FOUND_STRATUM 0 FIRST)
+        get_filename_component(SRC_DIR "${FIRST}" DIRECTORY)
+        message(STATUS "  Found src at: ${SRC_DIR}")
     endif()
 endif()
 
-# ============================================================
-# Verify RandomX - with fallback search
-# ============================================================
 if(NOT EXISTS "${RANDOMX_DIR}/src/randomx.h")
-    message(STATUS "RandomX not at expected path, searching...")
-    
-    # Search for randomx.h anywhere in the project
-    file(GLOB_RECURSE RANDOMX_HEADER_FOUND "${MINER_ROOT}/**/randomx.h")
-    
-    if(RANDOMX_HEADER_FOUND)
-        list(GET RANDOMX_HEADER_FOUND 0 RANDOMX_HEADER_PATH)
-        message(STATUS "  Found at: ${RANDOMX_HEADER_PATH}")
-        
-        # Extract the randomx root directory
-        get_filename_component(RANDOMX_SRC_DIR "${RANDOMX_HEADER_PATH}" DIRECTORY)
-        set(RANDOMX_DIR "${RANDOMX_SRC_DIR}/..")
-        get_filename_component(RANDOMX_DIR "${RANDOMX_DIR}" ABSOLUTE)
-        message(STATUS "  Using RandomX dir: ${RANDOMX_DIR}")
-    else()
-        message(FATAL_ERROR 
-            "\n========================================\n"
-            "  RANDOMX NOT FOUND!\n"
-            "  Searched: ${MINER_ROOT}\n"
-            "  Expected: ${RANDOMX_DIR}/src/randomx.h\n"
-            "\n"
-            "  Fix: Run the setup script or clone RandomX:\n"
-            "  git clone https://github.com/tevador/RandomX.git ${RANDOMX_DIR}\n"
-            "========================================")
+    file(GLOB_RECURSE FOUND_RX "${MINER_ROOT}/**/randomx.h")
+    if(FOUND_RX)
+        list(GET FOUND_RX 0 FIRST)
+        get_filename_component(RX_SRC "${FIRST}" DIRECTORY)
+        get_filename_component(RANDOMX_DIR "${RX_SRC}/.." ABSOLUTE)
+        message(STATUS "  Found RandomX at: ${RANDOMX_DIR}")
     endif()
 endif()
 
-message(STATUS "  ✅ RandomX found at: ${RANDOMX_DIR}")
+if(NOT EXISTS "${NLOHMANN_DIR}/json.hpp")
+    file(GLOB_RECURSE FOUND_JSON "${MINER_ROOT}/**/json.hpp")
+    if(FOUND_JSON)
+        list(GET FOUND_JSON 0 FIRST)
+        get_filename_component(NLOHMANN_DIR "${FIRST}" DIRECTORY)
+        message(STATUS "  Found JSON at: ${NLOHMANN_DIR}")
+    endif()
+endif()
+
+# ============================================================
+# Verify required files exist
+# ============================================================
+set(REQUIRED_FILES
+    "${SRC_DIR}/stratum_client.cpp"
+    "${SRC_DIR}/randomx_miner.cpp"
+    "${SRC_DIR}/job_handler.cpp"
+    "${LIBS_DIR}/randomx_wrapper.cpp"
+    "${RANDOMX_DIR}/src/randomx.h"
+)
+
+foreach(FILE ${REQUIRED_FILES})
+    if(NOT EXISTS "${FILE}")
+        message(FATAL_ERROR "MISSING: ${FILE}")
+    endif()
+    message(STATUS "  ✅ ${FILE}")
+endforeach()
 
 # ============================================================
 # Source Files
 # ============================================================
 set(SOURCES
-    # Android JNI bridge (this directory)
     ${CMAKE_CURRENT_SOURCE_DIR}/android_main.cpp
-    
-    # Core miner sources
     ${SRC_DIR}/stratum_client.cpp
     ${SRC_DIR}/randomx_miner.cpp
     ${SRC_DIR}/job_handler.cpp
-    
-    # Wrapper library
     ${LIBS_DIR}/randomx_wrapper.cpp
 )
 
-set(HEADERS
-    # Android bridge headers (if they exist)
-    ${SRC_DIR}/stratum_client.h
-    ${SRC_DIR}/randomx_miner.h
-    ${SRC_DIR}/job_handler.h
-    ${LIBS_DIR}/randomx_wrapper.h
-)
-
-# Only add Android bridge files if they exist
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/android_bridge.h")
-    list(APPEND HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/android_bridge.h)
-    message(STATUS "  Adding android_bridge.h")
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/android_thermal.h")
-    list(APPEND HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/android_thermal.h)
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/android_battery.h")
-    list(APPEND HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/android_battery.h)
-endif()
-
 # ============================================================
-# RandomX Library Configuration
+# RandomX
 # ============================================================
-if(ANDROID AND ARM64)
-    set(RANDOMX_USE_JIT ON CACHE BOOL "Enable JIT compiler" FORCE)
-    message(STATUS "  RandomX JIT: Enabled")
+if(ANDROID AND "${ANDROID_ABI}" STREQUAL "arm64-v8a")
+    set(RANDOMX_USE_JIT ON CACHE BOOL "JIT" FORCE)
 endif()
-
 add_subdirectory(${RANDOMX_DIR} ${CMAKE_BINARY_DIR}/randomx)
 
 # ============================================================
-# Create Shared Library
+# Create Library
 # ============================================================
-add_library(monerominer SHARED ${SOURCES} ${HEADERS})
+add_library(monerominer SHARED ${SOURCES})
 
-# ============================================================
-# Include Directories
-# ============================================================
 target_include_directories(monerominer PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}         # android/app/src/main/cpp/
-    ${SRC_DIR}                          # src/
-    ${LIBS_DIR}                         # libs/
-    ${RANDOMX_DIR}/src                  # libs/randomx/src/
-    ${NLOHMANN_DIR}                     # libs/nlohmann/
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${SRC_DIR}
+    ${LIBS_DIR}
+    ${RANDOMX_DIR}/src
+    ${NLOHMANN_DIR}
 )
 
-# ============================================================
-# Find and Link Libraries
-# ============================================================
 find_package(Threads REQUIRED)
 
-target_link_libraries(monerominer PRIVATE
+target_link_libraries(monerominer
     randomx
     Threads::Threads
     android
@@ -168,119 +130,32 @@ target_link_libraries(monerominer PRIVATE
     crypto
 )
 
-# ============================================================
-# Compile Definitions
-# ============================================================
-target_compile_definitions(monerominer PRIVATE
-    ANDROID
-    MOBILE_DEVICE
-    HAVE_SSL
-    NO_HUGEPAGES
-    NO_NUMA
-)
+target_compile_definitions(monerominer PRIVATE ANDROID MOBILE_DEVICE HAVE_SSL)
 
 # ============================================================
-# ARM64 Optimizations
+# Optimizations
 # ============================================================
-if(ANDROID AND ARM64)
-    target_compile_options(monerominer PRIVATE
-        -march=armv8-a
-        -mtune=cortex-a76
-        -O3
-        -fomit-frame-pointer
-        -funroll-loops
-        -fPIC
-        -fvisibility=hidden
-        -fdata-sections
-        -ffunction-sections
-        -fno-exceptions
-        -fno-rtti
-    )
-    
-    target_link_options(monerominer PRIVATE
-        -Wl,--gc-sections
-        -Wl,--strip-all
-        -Wl,--as-needed
-    )
-
-# ============================================================
-# ARMv7 Optimizations
-# ============================================================
-elseif(ANDROID AND ARMV7)
-    target_compile_options(monerominer PRIVATE
-        -march=armv7-a
-        -mfpu=neon
-        -mfloat-abi=softfp
-        -mtune=cortex-a53
-        -O3
-        -fomit-frame-pointer
-        -funroll-loops
-        -fPIC
-        -fvisibility=hidden
-        -fdata-sections
-        -ffunction-sections
-        -fno-exceptions
-        -fno-rtti
-    )
-    
-    target_link_options(monerominer PRIVATE
-        -Wl,--gc-sections
-        -Wl,--strip-all
-    )
-
-# ============================================================
-# x86_64 Optimizations (Emulator)
-# ============================================================
-elseif(ANDROID AND X86_64)
-    target_compile_options(monerominer PRIVATE
-        -march=x86-64
-        -msse4.2
-        -maes
-        -O3
-        -fomit-frame-pointer
-        -funroll-loops
-        -fPIC
-    )
-
-# ============================================================
-# Default Optimizations
-# ============================================================
-else()
-    target_compile_options(monerominer PRIVATE
-        -O3
-        -fPIC
-        -fvisibility=hidden
-        -fomit-frame-pointer
-    )
-endif()
-
-# ============================================================
-# Release: Strip Symbols
-# ============================================================
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set_target_properties(monerominer PROPERTIES
-        LINK_FLAGS_RELEASE "-s -Wl,--build-id=sha1"
-    )
-endif()
-
-# ============================================================
-# Export Compile Commands (for IDE support)
-# ============================================================
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# ============================================================
-# Print Final Configuration
-# ============================================================
-message(STATUS "=========================================")
-message(STATUS "BUILD CONFIGURATION:")
-message(STATUS "  Project Root:   ${MINER_ROOT}")
-message(STATUS "  RandomX:        ${RANDOMX_DIR}")
-message(STATUS "  Nlohmann JSON:  ${NLOHMANN_DIR}")
 if(ANDROID)
-    message(STATUS "  Android ABI:    ${ANDROID_ABI}")
-    message(STATUS "  Android NDK:    ${ANDROID_NDK}")
+    if("${ANDROID_ABI}" STREQUAL "arm64-v8a")
+        target_compile_options(monerominer PRIVATE -march=armv8-a -mtune=cortex-a76 -O3 -fPIC -fvisibility=hidden -fdata-sections -ffunction-sections)
+        target_link_options(monerominer PRIVATE -Wl,--gc-sections -Wl,--strip-all)
+    elseif("${ANDROID_ABI}" STREQUAL "armeabi-v7a")
+        target_compile_options(monerominer PRIVATE -march=armv7-a -mfpu=neon -mfloat-abi=softfp -mtune=cortex-a53 -O3 -fPIC -fvisibility=hidden -fdata-sections -ffunction-sections)
+        target_link_options(monerominer PRIVATE -Wl,--gc-sections -Wl,--strip-all)
+    else()
+        target_compile_options(monerominer PRIVATE -O3 -fPIC -fvisibility=hidden)
+    endif()
+else()
+    target_compile_options(monerominer PRIVATE -O3 -fPIC)
 endif()
-message(STATUS "  Build Type:     ${CMAKE_BUILD_TYPE}")
-message(STATUS "  Compiler:       ${CMAKE_CXX_COMPILER_ID}")
-message(STATUS "  Sources:        ${SOURCES}")
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_target_properties(monerominer PROPERTIES LINK_FLAGS_RELEASE "-s")
+endif()
+
+message(STATUS "=========================================")
+message(STATUS "BUILD READY")
+message(STATUS "  Root:    ${MINER_ROOT}")
+message(STATUS "  Src:     ${SRC_DIR}")
+message(STATUS "  RandomX: ${RANDOMX_DIR}")
 message(STATUS "=========================================")
