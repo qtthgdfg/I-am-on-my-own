@@ -1,3 +1,5 @@
+// FILE: MoneroRandomXMiner/android/build.gradle
+
 buildscript {
     ext {
         kotlin_version = '1.9.22'
@@ -8,15 +10,31 @@ buildscript {
         cmake_version = '3.22.1'
     }
     
+    // ========================================
+    // REPOSITORIES - THIS WAS MISSING!
+    // ========================================
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath "com.android.tools.build:gradle:8.2.2"
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 }
 
+// ========================================
+// REPOSITORIES FOR ALL PROJECTS
+// ========================================
 allprojects {
     repositories {
         google()
         mavenCentral()
     }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
 }
