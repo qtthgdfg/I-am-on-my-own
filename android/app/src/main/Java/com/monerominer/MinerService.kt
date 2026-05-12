@@ -1,5 +1,3 @@
-// FILE: MoneroRandomXMiner/android/app/src/main/java/com/monerominer/MinerService.kt
-
 package com.monerominer
 
 import android.app.*
@@ -20,11 +18,10 @@ class MinerService : LifecycleService() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var currentConfig: MinerConfig? = null
     
-    // Connection tracking
     private var currentPort: Int = 3333
     private var currentSSL: Boolean = false
     private var connectionAttempts: Int = 0
-    private val maxConnectionAttempts: Int = 10  // Try all ports before giving up
+    private val maxConnectionAttempts: Int = 10
 
     inner class LocalBinder : android.os.Binder() {
         fun getService(): MinerService = this@MinerService
@@ -55,10 +52,6 @@ class MinerService : LifecycleService() {
         return START_STICKY
     }
 
-    /**
-     * Start mining with smart port fallback
-     * Tries all available ports before giving up
-     */
     private fun startMiningWithFallback(config: MinerConfig) {
         if (minerRunning) return
         
@@ -71,23 +64,22 @@ class MinerService : LifecycleService() {
         
         scope.launch {
             try {
-                val portsToTry = config.getAllPortsToTry()
+                // Use the new getConnectionSequence() method
+                val portsToTry = config.getConnectionSequence()
                 var connected = false
                 
                 broadcastStatus(STATUS_CONNECTING, "Starting connection attempts...")
                 
-                for (port in portsToTry) {
+                for ((port, useSSL) in portsToTry) {
                     if (connectionAttempts >= maxConnectionAttempts) {
                         broadcastStatus(STATUS_ERROR, "Exhausted all connection attempts")
                         break
                     }
                     
-                    val useSSL = config.isSSLPort(port)
                     currentPort = port
                     currentSSL = useSSL
                     connectionAttempts++
                     
-                    val url = config.getStratumUrl(port, useSSL)
                     val sslLabel = if (useSSL) "🔒 SSL" else "🔓 Non-SSL"
                     
                     broadcastStatus(STATUS_CONNECTING, 
@@ -97,20 +89,15 @@ class MinerService : LifecycleService() {
                     
                     if (tryConnection(config, port, useSSL)) {
                         connected = true
-                        broadcastStatus(STATUS_CONNECTED, 
-                            "✅ Connected via $sslLabel port $port")
+                        broadcastStatus(STATUS_CONNECTED, "✅ Connected via $sslLabel port $port")
                         break
                     } else {
-                        broadcastStatus(STATUS_RETRY, 
-                            "❌ $sslLabel port $port failed, trying next...")
-                        
-                        // Small delay between attempts
+                        broadcastStatus(STATUS_RETRY, "❌ $sslLabel port $port failed, trying next...")
                         delay(2000)
                     }
                 }
                 
                 if (connected) {
-                    // Start the actual mining
                     val miningStarted = nativeStartMining(config, MinerCallback())
                     
                     if (miningStarted) {
@@ -124,26 +111,8 @@ class MinerService : LifecycleService() {
                     }
                 } else {
                     broadcastStatus(STATUS_ERROR, 
-                        "⚠️ Could not connect to ${config.poolHost} after trying ${connectionAttempts} ports")
-                    
-                    // Try non-SSL as absolute last resort if SSL was enabled
-                    if (config.useSSL && config.poolPort !in config.allPortsToTry) {
-                        broadcastStatus(STATUS_CONNECTING, "Last resort: trying original port ${config.poolPort} (non-SSL)...")
-                        
-                        if (tryConnection(config, config.poolPort, false)) {
-                            connected = true
-                            minerRunning = true
-                            currentPort = config.poolPort
-                            currentSSL = false
-                            updateNotification(config, "Connected non-SSL on port ${config.poolPort}")
-                            broadcastStatus(STATUS_MINING, "⚠️ Connected non-SSL (last resort)")
-                            startStatsUpdate()
-                        } else {
-                            stopMining()
-                        }
-                    } else {
-                        stopMining()
-                    }
+                        "⚠️ Could not connect to ${config.pool.host} after trying $connectionAttempts ports")
+                    stopMining()
                 }
             } catch (e: Exception) {
                 broadcastStatus(STATUS_ERROR, "Connection error: ${e.message}")
@@ -152,16 +121,13 @@ class MinerService : LifecycleService() {
         }
     }
 
-    /**
-     * Try connecting to a specific port
-     */
     private suspend fun tryConnection(config: MinerConfig, port: Int, useSSL: Boolean): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 nativeConnectSSL(
-                    config.poolHost,
+                    config.pool.host,
                     port,
-                    config.wallet,
+                    config.getActiveMiningAddress(),
                     config.password,
                     config.worker,
                     useSSL
@@ -249,10 +215,11 @@ class MinerService : LifecycleService() {
         
         val sslInfo = if (currentSSL) "🔒 SSL" else "🔓 Non-SSL"
         val portInfo = if (currentPort > 0) ":$currentPort" else ""
+        val threads = config.performance.threads
         
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Monero Miner")
-            .setContentText("$status | $sslInfo$portInfo | ${config.threads} threads")
+            .setContentText("$status | $sslInfo$portInfo | $threads threads")
             .setSmallIcon(R.drawable.ic_mining)
             .setOngoing(minerRunning)
             .setContentIntent(pendingIntent)
@@ -286,7 +253,6 @@ class MinerService : LifecycleService() {
         super.onDestroy()
     }
 
-    // Native methods
     private external fun nativeConnectSSL(
         host: String, port: Int, wallet: String,
         password: String, worker: String, useSSL: Boolean
