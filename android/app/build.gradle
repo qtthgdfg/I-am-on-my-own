@@ -14,19 +14,7 @@ android {
         versionCode 1
         versionName "1.0.0"
         
-        ndk {
-            abiFilters 'armeabi-v7a', 'arm64-v8a'
-        }
-        
-        externalNativeBuild {
-            cmake {
-                arguments "-DANDROID_STL=c++_shared",
-                          "-DANDROID_TOOLCHAIN=clang",
-                          "-DANDROID_PLATFORM=android-26"
-                cppFlags "-std=c++17", "-O3"
-                targets "monerominer"
-            }
-        }
+        // REMOVE NATIVE BUILD FOR TESTING
     }
     
     buildTypes {
@@ -48,14 +36,8 @@ android {
         jvmTarget = '17'
     }
     
-    externalNativeBuild {
-        cmake {
-            path file('src/main/cpp/CMakeLists.txt')
-            version "3.22.1"
-        }
-    }
+    // REMOVE NATIVE BUILD FOR TESTING
     
-    // ADD THIS - generates BuildConfig.DEBUG
     buildFeatures {
         buildConfig = true
     }
