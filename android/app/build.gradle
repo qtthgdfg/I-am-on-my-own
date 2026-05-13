@@ -54,6 +54,11 @@ android {
             version "3.22.1"
         }
     }
+    
+    // ADD THIS - generates BuildConfig.DEBUG
+    buildFeatures {
+        buildConfig = true
+    }
 }
 
 dependencies {
