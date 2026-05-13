@@ -30,6 +30,32 @@ RandomXMiner::~RandomXMiner() {
 }
 
 bool RandomXMiner::initialize() {
+    // Connect to the Stratum pool
+    if (!m_stratum->connect()) {
+        std::cerr << "Failed to connect to pool" << std::endl;
+        return false;
+    }
+    
+    // Login to the pool
+    if (!m_stratum->login()) {
+        std::cerr << "Failed to login to pool" << std::endl;
+        return false;
+    }
+    
+    // Set up job callback
+    m_stratum->set_job_callback([this](const MiningJob& job) {
+        this->on_new_job(job);
+    });
+    
+    // Set up share callback
+    m_stratum->set_share_callback([this](bool accepted, const std::string& response) {
+        this->on_share_result(accepted, response);
+    });
+    
+    // Start receiving jobs from the pool
+    m_stratum->start_receive_loop();
+    
+    std::cout << "Successfully connected and logged in to pool" << std::endl;
     return true;
 }
 
@@ -147,7 +173,18 @@ bool RandomXMiner::hash_meets_target(const uint8_t* hash, uint64_t target) {
 }
 
 void RandomXMiner::mining_thread(uint32_t thread_id) {
+    // Check if RandomX is initialized before using VM
+    if (thread_id >= m_rx_vms.size()) {
+        std::cerr << "Error: Invalid thread_id " << thread_id << ", RandomX not initialized" << std::endl;
+        return;
+    }
+    
     randomx_vm* vm = m_rx_vms[thread_id];
+    if (!vm) {
+        std::cerr << "Error: VM for thread " << thread_id << " is null" << std::endl;
+        return;
+    }
+    
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> nonce_dist(0, 0xFFFFFFFF);
@@ -171,6 +208,10 @@ void RandomXMiner::mining_thread(uint32_t thread_id) {
         
         if (job.seed_hash != m_current_seed_hash) {
             initialize_randomx(job.seed_hash);
+            if (thread_id >= m_rx_vms.size()) {
+                std::cerr << "Error: RandomX initialization failed" << std::endl;
+                break;
+            }
             vm = m_rx_vms[thread_id];
         }
         
