@@ -5,171 +5,239 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.text.method.ScrollingMovementMethod
-import android.view.View
-import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.textfield.TextInputEditText
-import android.widget.TextView
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
     private lateinit var hashrateText: TextView
-    private lateinit var sharesText: TextView
     private lateinit var logText: TextView
-    private lateinit var startButton: MaterialButton
-    private lateinit var stopButton: MaterialButton
-    private lateinit var settingsButton: MaterialButton
-    
-    private lateinit var poolHostInput: TextInputEditText
-    private lateinit var poolPortInput: TextInputEditText
-    private lateinit var threadsInput: TextInputEditText
-    private lateinit var walletInput: TextInputEditText
-    private lateinit var workerInput: TextInputEditText
+    private lateinit var startButton: Button
+    private lateinit var stopButton: Button
+    private lateinit var walletInput: EditText
+    private lateinit var poolHostInput: EditText
+    private lateinit var threadsInput: EditText
+    private var isMining = false
+    private val prefs by lazy { getSharedPreferences("miner_config", MODE_PRIVATE) }
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.getStringExtra(MinerService.EXTRA_STATUS)) {
-                MinerService.STATUS_MINING -> updateUI(true)
-                MinerService.STATUS_STOPPED -> updateUI(false)
-                MinerService.STATUS_PAUSED -> {
-                    statusText.text = getString(R.string.status_paused)
-                    enableControls(true)
+            val status = intent?.getStringExtra("status") ?: return
+            val data = intent?.getStringExtra("data") ?: ""
+            
+            when (status) {
+                "mining" -> {
+                    isMining = true
+                    statusText.text = "Status: Mining Active"
+                    startButton.isEnabled = false
+                    stopButton.isEnabled = true
                 }
-                MinerService.STATUS_ERROR -> {
-                    val error = intent.getStringExtra(MinerService.EXTRA_DATA)
-                    statusText.text = "Error: $error"
-                    enableControls(true)
+                "stopped" -> {
+                    isMining = false
+                    statusText.text = "Status: Stopped"
+                    startButton.isEnabled = true
+                    stopButton.isEnabled = false
                 }
-                MinerService.STATUS_STATS -> {
-                    val stats = intent.getStringExtra(MinerService.EXTRA_DATA)
-                    parseStats(stats)
+                "stats" -> {
+                    try {
+                        val h = data.split("\"hashrate\":")[1].split(",")[0].trim().toDoubleOrNull() ?: 0.0
+                        hashrateText.text = String.format("%.0f H/s", h)
+                    } catch (e: Exception) {}
                 }
-                MinerService.STATUS_SHARE_FOUND -> {
-                    val data = intent.getStringExtra(MinerService.EXTRA_DATA)
-                    appendLog("🎯 Share found! $data")
-                }
+                "share_found" -> appendLog("Share found! $data")
+                "error" -> appendLog("Error: $data")
+                "connecting" -> appendLog("Connecting: $data")
             }
-        }
-    }
-
-    private val notificationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            appendLog("✅ Notification permission granted")
-        } else {
-            appendLog("⚠️ Notification permission denied")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
         
-        initializeViews()
-        setupButtons()
-        loadSavedConfig()
+        // Create layout in code
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 40, 32, 32)
+            setBackgroundColor(0xFF1A1A2E.toInt())
+        }
         
-        registerReceiver(statusReceiver, IntentFilter(MinerService.ACTION_STATUS_UPDATE))
+        val scrollView = ScrollView(this)
+        val innerLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
         
+        // Title
+        innerLayout.addView(TextView(this).apply {
+            text = "Monero RandomX Miner"
+            textSize = 22f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 0, 0, 24)
+        })
+        
+        // Status
+        statusText = TextView(this).apply {
+            text = "Status: Ready"
+            textSize = 16f
+            setTextColor(0xFF00C853.toInt())
+            setPadding(0, 0, 0, 8)
+        }
+        innerLayout.addView(statusText)
+        
+        // Hashrate
+        hashrateText = TextView(this).apply {
+            text = "0 H/s"
+            textSize = 14f
+            setTextColor(0xFFB0B0B0.toInt())
+            setPadding(0, 0, 0, 24)
+        }
+        innerLayout.addView(hashrateText)
+        
+        // Pool Host
+        innerLayout.addView(TextView(this).apply {
+            text = "Pool Host"
+            textSize = 12f
+            setTextColor(0xFF8899AA.toInt())
+        })
+        poolHostInput = EditText(this).apply {
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF16213E.toInt())
+            setPadding(16, 12, 16, 12)
+            minHeight = 44
+            setText(prefs.getString("pool_host", "pool.supportxmr.com"))
+        }
+        innerLayout.addView(poolHostInput)
+        innerLayout.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 8) })
+        
+        // Threads
+        innerLayout.addView(TextView(this).apply {
+            text = "Threads"
+            textSize = 12f
+            setTextColor(0xFF8899AA.toInt())
+        })
+        threadsInput = EditText(this).apply {
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF16213E.toInt())
+            setPadding(16, 12, 16, 12)
+            minHeight = 44
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(prefs.getString("threads", "2"))
+        }
+        innerLayout.addView(threadsInput)
+        innerLayout.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 8) })
+        
+        // Wallet
+        innerLayout.addView(TextView(this).apply {
+            text = "Wallet Address"
+            textSize = 12f
+            setTextColor(0xFF8899AA.toInt())
+        })
+        walletInput = EditText(this).apply {
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF16213E.toInt())
+            setPadding(16, 12, 16, 12)
+            minHeight = 44
+            hint = "4..."
+            setHintTextColor(0xFF556677.toInt())
+            setText(prefs.getString("wallet", ""))
+        }
+        innerLayout.addView(walletInput)
+        innerLayout.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 16) })
+        
+        // Buttons
+        val buttonLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        
+        startButton = Button(this).apply {
+            text = "START"
+            setBackgroundColor(0xFF00C853.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            setOnClickListener { startMining() }
+        }
+        buttonLayout.addView(startButton, LinearLayout.LayoutParams(0, -2, 1f))
+        buttonLayout.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(8, 0) })
+        
+        stopButton = Button(this).apply {
+            text = "STOP"
+            setBackgroundColor(0xFFE94560.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            isEnabled = false
+            setOnClickListener { stopMining() }
+        }
+        buttonLayout.addView(stopButton, LinearLayout.LayoutParams(0, -2, 1f))
+        
+        innerLayout.addView(buttonLayout)
+        innerLayout.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 16) })
+        
+        // Log
+        logText = TextView(this).apply {
+            text = "Ready to mine...\n"
+            textSize = 11f
+            setTextColor(0xFF8899AA.toInt())
+            setBackgroundColor(0xFF0F3460.toInt())
+            setPadding(12, 12, 12, 12)
+            minHeight = 200
+        }
+        innerLayout.addView(logText)
+        
+        scrollView.addView(innerLayout)
+        layout.addView(scrollView)
+        setContentView(layout)
+        
+        // Register receiver
+        val filter = IntentFilter("com.monerominer.STATUS_UPDATE")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
-
-    private fun initializeViews() {
-        statusText = findViewById(R.id.status_text)
-        hashrateText = findViewById(R.id.hashrate_text)
-        sharesText = findViewById(R.id.shares_text)
-        logText = findViewById(R.id.log_text).apply {
-            movementMethod = ScrollingMovementMethod()
+            registerReceiver(statusReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(statusReceiver, filter)
         }
         
-        startButton = findViewById(R.id.start_button)
-        stopButton = findViewById(R.id.stop_button)
-        settingsButton = findViewById(R.id.settings_button)
-        
-        poolHostInput = findViewById(R.id.pool_host_input)
-        poolPortInput = findViewById(R.id.pool_port_input)
-        threadsInput = findViewById(R.id.threads_input)
-        walletInput = findViewById(R.id.wallet_input)
-        workerInput = findViewById(R.id.worker_input)
-    }
-
-    private fun setupButtons() {
-        startButton.setOnClickListener {
-            if (validateInputs()) {
-                startMining()
+        // Request notification permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    1001
+                )
             }
-        }
-        
-        stopButton.setOnClickListener {
-            stopMining()
-        }
-        
-        // SETTINGS BUTTON
-        settingsButton.setOnClickListener {
-            val intent = Intent(this, SettingsActivity::class.java)
-            startActivity(intent)
         }
     }
     
-    override fun onResume() {
-        super.onResume()
-        // Reload config when returning from settings
-        loadSavedConfig()
-    }
-
-    private fun validateInputs(): Boolean {
-        val wallet = walletInput.text.toString().trim()
-        
-        if (wallet.isEmpty()) {
-            Toast.makeText(this, "Wallet address is required", Toast.LENGTH_LONG).show()
-            return false
-        }
-        
-        if (wallet.length < 95) {
-            Toast.makeText(this, "Invalid wallet address", Toast.LENGTH_LONG).show()
-            return false
-        }
-        
-        val threads = threadsInput.text.toString().toIntOrNull() ?: 1
-        val cpuCount = Runtime.getRuntime().availableProcessors()
-        
-        if (threads > cpuCount) {
-            Toast.makeText(this, 
-                "Threads exceed CPU cores ($cpuCount)", 
-                Toast.LENGTH_LONG).show()
-            return false
-        }
-        
-        return true
-    }
-
     private fun startMining() {
-        saveConfig()
+        val wallet = walletInput.text.toString().trim()
+        if (wallet.isEmpty()) {
+            Toast.makeText(this, "Enter wallet address", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        // Save config
+        prefs.edit().apply {
+            putString("pool_host", poolHostInput.text.toString().trim())
+            putString("wallet", wallet)
+            putString("threads", threadsInput.text.toString().trim())
+            apply()
+        }
         
         val config = MinerConfig(
-            poolHost = poolHostInput.text.toString().trim(),
-            poolPort = poolPortInput.text.toString().toIntOrNull() ?: 3333,
-            wallet = walletInput.text.toString().trim(),
-            worker = workerInput.text.toString().trim().ifEmpty { "android_miner" },
-            password = "x",
-            threads = threadsInput.text.toString().toIntOrNull() ?: 2,
-            useSSL = false
+            pool = PoolConfig(host = poolHostInput.text.toString().trim()),
+            worker = "android_miner",
+            performance = PerformanceConfig(
+                threads = threadsInput.text.toString().toIntOrNull() ?: 2
+            )
         )
         
         val intent = Intent(this, MinerService::class.java).apply {
-            action = MinerService.ACTION_START
-            putExtra(MinerService.EXTRA_CONFIG, config)
+            action = "com.monerominer.START"
+            putExtra("config", config)
         }
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -178,94 +246,29 @@ class MainActivity : ComponentActivity() {
             startService(intent)
         }
         
-        enableControls(false)
-        statusText.text = getString(R.string.status_mining)
-        appendLog("🚀 Starting Monero RandomX miner...")
-        appendLog("Pool: ${config.poolHost}:${config.poolPort}")
-        appendLog("Threads: ${config.threads}")
+        appendLog("Starting miner...")
+        appendLog("Pool: ${config.pool.host}")
+        appendLog("Threads: ${config.performance.threads}")
     }
-
+    
     private fun stopMining() {
         val intent = Intent(this, MinerService::class.java).apply {
-            action = MinerService.ACTION_STOP
+            action = "com.monerominer.STOP"
         }
         startService(intent)
-        
-        updateUI(false)
-        appendLog("⏹️ Miner stopped")
+        appendLog("Miner stopped")
     }
-
-    private fun updateUI(mining: Boolean) {
-        statusText.text = if (mining) getString(R.string.status_mining) 
-                         else getString(R.string.status_stopped)
-        enableControls(!mining)
-    }
-
-    private fun enableControls(enabled: Boolean) {
-        startButton.isEnabled = enabled
-        stopButton.isEnabled = !enabled
-        settingsButton.isEnabled = enabled
-        
-        listOf(poolHostInput, poolPortInput, threadsInput, 
-               walletInput, workerInput).forEach {
-            it.isEnabled = enabled
-        }
-    }
-
-    private fun parseStats(stats: String) {
-        try {
-            if (stats.contains("\"hashrate\"")) {
-                val hashrate = stats.split("\"hashrate\":")[1]
-                    .split(",")[0].trim().toDoubleOrNull() ?: 0.0
-                
-                hashrateText.text = when {
-                    hashrate >= 1_000_000 -> String.format("%.2f MH/s", hashrate / 1_000_000)
-                    hashrate >= 1_000 -> String.format("%.2f KH/s", hashrate / 1_000)
-                    else -> String.format("%.0f H/s", hashrate)
-                }
-            }
-        } catch (e: Exception) {
-            hashrateText.text = "0 H/s"
-        }
-    }
-
+    
     private fun appendLog(message: String) {
         val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
             .format(java.util.Date())
-        
         runOnUiThread {
-            logText.append("[$timestamp] $message\n")
-            
-            val scrollView = logText.parent as? android.widget.ScrollView
-            scrollView?.post {
-                scrollView.fullScroll(android.view.View.FOCUS_DOWN)
-            }
+            logText.text = "${logText.text}[$timestamp] $message\n"
         }
     }
-
-    private fun saveConfig() {
-        getSharedPreferences("miner_config", MODE_PRIVATE).edit().apply {
-            putString("pool_host", poolHostInput.text.toString().trim())
-            putString("pool_port", poolPortInput.text.toString().trim())
-            putString("wallet", walletInput.text.toString().trim())
-            putString("worker", workerInput.text.toString().trim())
-            putString("threads", threadsInput.text.toString().trim())
-            apply()
-        }
-    }
-
-    private fun loadSavedConfig() {
-        getSharedPreferences("miner_config", MODE_PRIVATE).apply {
-            poolHostInput.setText(getString("pool_host", "pool.supportxmr.com"))
-            poolPortInput.setText(getString("pool_port", "3333"))
-            walletInput.setText(getString("wallet", ""))
-            workerInput.setText(getString("worker", "android_miner"))
-            threadsInput.setText(getString("threads", "2"))
-        }
-    }
-
+    
     override fun onDestroy() {
-        unregisterReceiver(statusReceiver)
+        try { unregisterReceiver(statusReceiver) } catch (e: Exception) {}
         super.onDestroy()
     }
 }
