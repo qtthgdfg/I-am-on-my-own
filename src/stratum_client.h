@@ -5,6 +5,7 @@
 #include <thread>
 #include <mutex>
 #include <functional>
+#include <chrono>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
