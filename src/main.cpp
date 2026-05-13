@@ -2,6 +2,7 @@
 #include <iostream>
 #include <fstream>
 #include <csignal>
+#include <thread>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
