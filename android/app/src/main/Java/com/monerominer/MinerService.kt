@@ -142,5 +142,6 @@ class MinerService : Service() {
         const val ACTION_START = "com.monerominer.START"
         const val ACTION_STOP = "com.monerominer.STOP"
         const val ACTION_PAUSE = "com.monerominer.PAUSE"
+        const val EXTRA_CONFIG = "extra_config"
     }
 }
